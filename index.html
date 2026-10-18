@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#050a0a">
+  <title>Esconde-Esconde VR</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://aframe.io/releases/1.4.2/aframe.min.js"></script>
+</head>
+<body>
+  <div id="hud" aria-live="polite">
+    <div class="hud-title">Esconde-Esconde VR</div>
+    <div>TEMPO VIVO: <span id="time-val">0.0</span>s</div>
+    <div>TAPAS NO ROBÔ: <span id="slap-val" class="score">0</span></div>
+    <div>ROBÔS TONTEADOS: <span id="stun-val">0</span></div>
+    <div>PONTUAÇÃO: <span id="score-val" class="score">0</span> pts</div>
+    <div>CAÇADORES: <span id="bot-count-val">1</span> / 5</div>
+    <div id="bot-states-list"></div>
+    <div class="bar-label">BARRA DE PERSEGUIÇÃO:</div>
+    <div class="bar-bg"><div id="detection-fill"></div></div>
+    <div class="controls-hint" id="controls-hint">PC: WASD/setas para mover · mouse para olhar</div>
+  </div>
+
+  <div id="alert-overlay" role="status">⚠️ NOVO CAÇADOR ENTRANDO! ⚠️</div>
+
+  <div id="game-over-modal" role="dialog" aria-modal="true" aria-labelledby="game-over-title">
+    <h1 id="game-over-title">PEGO!</h1>
+    <p>Você foi capturado pelos caçadores.</p>
+    <p class="final-score">Pontuação: <span id="final-score">0</span> pts</p>
+    <button class="btn btn-restart" id="btn-restart-2d">REINICIAR PARTIDA</button>
+    <button class="btn btn-quit" id="btn-quit-2d">SAIR DO JOGO</button>
+  </div>
+
+  <a-scene id="game-scene" embedded background="color: #111820" renderer="antialias: true; colorManagement: true" webxr="optionalFeatures: local-floor, bounded-floor, hand-tracking">
+    <a-entity light="type: ambient; intensity: 0.8"></a-entity>
+    <a-entity light="type: directional; intensity: 0.8" position="-1 8 2"></a-entity>
+    <a-plane position="0 -0.03 0" rotation="-90 0 0" width="50" height="50" color="#22272b" material="roughness: 0.95"></a-plane>
+
+    <!-- Limites do mapa -->
+    <a-box class="boundary" position="0 2.5 -24.5" width="50" height="5" depth="1" material="color: #00ffcc; wireframe: true"></a-box>
+    <a-box class="boundary" position="0 2.5 24.5" width="50" height="5" depth="1" material="color: #00ffcc; wireframe: true"></a-box>
+    <a-box class="boundary" position="-24.5 2.5 0" width="1" height="5" depth="50" material="color: #00ffcc; wireframe: true"></a-box>
+    <a-box class="boundary" position="24.5 2.5 0" width="1" height="5" depth="50" material="color: #00ffcc; wireframe: true"></a-box>
+
+    <!-- Esconderijos: os objetos também funcionam como obstáculos -->
+    <a-box class="hiding-spot" id="spot-red" position="-12 1.5 -12" width="3.2" height="3" depth="3.2" color="#ff3030" data-sizex="3.2" data-sizez="3.2"></a-box>
+    <a-box class="hiding-spot" id="spot-blue" position="12 1.5 -12" width="3.2" height="3" depth="3.2" color="#2878ff" data-sizex="3.2" data-sizez="3.2"></a-box>
+    <a-box class="hiding-spot" id="spot-green" position="-14 1.5 8" width="3.2" height="3" depth="3.2" color="#00bb65" data-sizex="3.2" data-sizez="3.2"></a-box>
+    <a-box class="hiding-spot" id="spot-yellow" position="14 1.5 8" width="3.2" height="3" depth="3.2" color="#e6d52a" data-sizex="3.2" data-sizez="3.2"></a-box>
+    <a-cylinder class="hiding-spot" id="spot-magenta" position="-8 2 15" radius="1.8" height="4" color="#cf42e8" data-size="3.6"></a-cylinder>
+    <a-cylinder class="hiding-spot" id="spot-cyan" position="8 2 15" radius="1.8" height="4" color="#00cbd1" data-size="3.6"></a-cylinder>
+    <a-sphere class="hiding-spot" id="spot-orange" position="-16 2 -3" radius="2.2" color="#ff7f00" data-size="4.4"></a-sphere>
+    <a-sphere class="hiding-spot" id="spot-purple" position="16 2 -3" radius="2.2" color="#8a2be2" data-size="4.4"></a-sphere>
+    <a-cone class="hiding-spot" id="spot-lime" position="0 2.5 -18" radius-bottom="2.5" height="5" color="#32cd32" data-size="5"></a-cone>
+    <a-cone class="hiding-spot" id="spot-pink" position="0 2.5 18" radius-bottom="2.5" height="5" color="#ff69b4" data-size="5"></a-cone>
+    <a-box class="hiding-spot" id="spot-center-main" position="0 2 0" width="2.8" height="4" depth="2.8" color="#8a2be2" data-size="2.8"></a-box>
+    <a-cylinder class="hiding-spot" id="spot-center-cyan" position="-3 1.5 -3" radius="1.2" height="3" color="#00ffff" data-size="2.4"></a-cylinder>
+    <a-box class="hiding-spot" id="spot-center-orange" position="3 1.5 -3" width="2.2" height="3" depth="2.2" color="#ff7f00" data-size="2.2"></a-box>
+    <a-sphere class="hiding-spot" id="spot-center-yellow" position="-3.5 1.5 3" radius="1.5" color="#ffff00" data-size="3"></a-sphere>
+    <a-cone class="hiding-spot" id="spot-center-red" position="3.5 2 3" radius-bottom="1.5" height="4" color="#ff0000" data-size="3"></a-cone>
+    <a-box class="hiding-spot" id="spot-wall-north" position="0 1.25 -6" width="5.2" height="2.5" depth="1" color="#00a878" data-sizex="5.2" data-sizez="1"></a-box>
+    <a-box class="hiding-spot" id="spot-wall-south" position="0 1.25 6" width="5.2" height="2.5" depth="1" color="#d52c83" data-sizex="5.2" data-sizez="1"></a-box>
+
+    <a-entity id="bot-container"></a-entity>
+
+    <a-entity id="rig" position="0 0 10">
+      <a-entity id="camera" camera look-controls="pointerLockEnabled: false" position="0 1.6 0">
+        <a-cursor id="cursor" raycaster="objects: .clickable; far: 10" fuse="false" color="#ffffff" scale="0.5 0.5 0.5"></a-cursor>
+        <!-- Mãos de demonstração para PC; no Quest são substituídas pelas mãos WebXR rastreadas. -->
+        <a-entity id="desktop-hands" visible="true">
+          <a-entity id="desktop-left-hand" position="-0.36 -0.28 -0.68" rotation="0 0 12"></a-entity>
+          <a-entity id="desktop-right-hand" position="0.36 -0.28 -0.68" rotation="0 0 -12"></a-entity>
+        </a-entity>
+        <a-entity id="vr-hud" position="0 -0.38 -1.25" visible="false">
+          <a-plane width="1.65" height="0.24" color="#001c1a" material="shader: flat; opacity: 0.82"></a-plane>
+          <a-text id="vr-hud-text" value="Tempo: 0.0s | Pts: 0" align="center" position="0 0 0.01" width="2.6" color="#00ffcc"></a-text>
+        </a-entity>
+      </a-entity>
+      <a-entity id="left-controller" oculus-touch-controls="hand: left"></a-entity>
+      <a-entity id="right-controller" laser-controls="hand: right" raycaster="objects: .clickable; far: 10" line="color: #00ffcc; opacity: 0.8"></a-entity>
+      <!-- Mãos reais: o navegador/Quest fornece juntas e rastreamento dos dedos via WebXR. -->
+      <a-entity id="left-tracked-hand" hand-tracking-controls="hand: left; modelStyle: mesh; modelColor: #e8b99a" visible="false"></a-entity>
+      <a-entity id="right-tracked-hand" hand-tracking-controls="hand: right; modelStyle: mesh; modelColor: #e8b99a" visible="false"></a-entity>
+    </a-entity>
+
+    <a-entity id="vr-game-over-panel" visible="false" position="0 1.6 -2">
+      <a-plane width="3.5" height="2.2" color="#050505" material="shader: flat; opacity: 0.96"></a-plane>
+      <a-plane width="3.55" height="2.25" position="0 0 -0.01" color="#ff2020" material="shader: flat; side: double"></a-plane>
+      <a-plane width="3.4" height="2.1" position="0 0 0.01" color="#050505" material="shader: flat; side: double"></a-plane>
+      <a-text value="PEGO!" align="center" position="0 0.62 0.03" width="5" color="#ff3030"></a-text>
+      <a-text id="vr-final-score" value="Pontuação: 0" align="center" position="0 0.25 0.03" width="4" color="#ffffff"></a-text>
+      <a-box id="vr-btn-restart" class="clickable" position="-0.75 -0.38 0.08" width="1.3" height="0.42" depth="0.12" color="#00dd77">
+        <a-text value="REINICIAR" align="center" position="0 0 0.07" width="2.6" color="#001b0c"></a-text>
+      </a-box>
+      <a-box id="vr-btn-quit" class="clickable" position="0.75 -0.38 0.08" width="1.1" height="0.42" depth="0.12" color="#ff3030">
+        <a-text value="SAIR" align="center" position="0 0 0.07" width="2.5" color="#ffffff"></a-text>
+      </a-box>
+    </a-entity>
+  </a-scene>
+
+  <script src="game.js"></script>
+</body>
+</html>
