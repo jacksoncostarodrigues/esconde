@@ -21,6 +21,7 @@
   let timeEl, scoreEl, finalScoreEl, botCountEl, botStatesEl, detectionFillEl, slapEl, stunEl;
   let slapCount = 0, mouseSpeed = 0, mouseLast = { x: 0, y: 0, t: 0 }, desktopThrust = 0;
   let desktopRightHand, desktopLeftHand, desktopHandsEl, leftTrackedHand, rightTrackedHand;
+  let leftControllerEl, rightControllerEl;
   const handSamples = new Map();
   let slapCooldown = { left: 0, right: 0 };
   let survivalTime = 0, score = 0, isGameOver = false;
@@ -40,6 +41,8 @@
   let boostTimer = 0;
   let powerupEntities = [];
 
+  // ================= Construção das mãos =================
+
   function buildDesktopHand(handEl, left) {
     if (!handEl || handEl.dataset.built === '1') return;
     handEl.dataset.built = '1';
@@ -56,7 +59,6 @@
     for (let i = 0; i < 4; i++) {
       const x = (i - 1.5) * 0.044;
       const length = [0.09, 0.11, 0.10, 0.08][i];
-
       add('a-cylinder', { class: 'hand-part', position: `${x} ${0.06 + length / 2} 0`, radius: '0.016', height: String(length), color: skin, material: 'roughness: 0.7' });
       add('a-sphere', { class: 'hand-part-shadow', position: `${x} ${0.06 + length} 0`, radius: '0.017', color: shadow });
       add('a-cylinder', { class: 'hand-part', position: `${x} ${0.06 + length + 0.03} -0.01`, radius: '0.014', height: '0.05', rotation: '-15 0 0', color: skin, material: 'roughness: 0.7' });
@@ -69,6 +71,47 @@
 
     handEl.setAttribute('scale', '1 1 1');
   }
+
+  /**
+   * Anexa uma mão 3D visível ao controlador VR.
+   * Isso faz a mão SEMPRE aparecer enquanto o controle estiver sendo rastreado,
+   * independentemente de hand-tracking estar ligado ou não.
+   */
+  function attachVRHandToController(controllerEl, left) {
+    if (!controllerEl || controllerEl.querySelector('.vr-hand')) return;
+    const handEl = document.createElement('a-entity');
+    handEl.classList.add('vr-hand');
+    handEl.classList.add('hand-part');
+    buildDesktopHand(handEl, left);
+    // buildDesktopHand seta scale 1; sobrescrevemos depois
+    handEl.setAttribute('scale', '1.1 1.1 1.1');
+    handEl.setAttribute('rotation', '-90 0 0');
+    handEl.setAttribute('position', '0 0.02 -0.05');
+    controllerEl.appendChild(handEl);
+  }
+
+  /**
+   * Liga/desliga a mão do controle e da mão rastreada conforme o que está ativo.
+   * - Se o controle está sendo rastreado → mostra a mão do controle (a malha 3D).
+   * - Se hand-tracking nativo está ativo → mostra a mão rastreada.
+   */
+  function updateVRHandsVisibility() {
+    if (!scene || !scene.is('vr-mode')) return;
+    ['left', 'right'].forEach(side => {
+      const ctrl = $(side + '-controller');
+      if (!ctrl) return;
+      const ctrlHand = ctrl.querySelector('.vr-hand');
+      const trackedHand = $(side + '-tracked-hand');
+
+      const comp = ctrl.components && ctrl.components['tracked-controls'];
+      const hasController = !!(comp && comp.controller && comp.controller.gamepad);
+
+      if (ctrlHand) ctrlHand.setAttribute('visible', hasController ? 'true' : 'false');
+      if (trackedHand) trackedHand.setAttribute('visible', hasController ? 'false' : 'true');
+    });
+  }
+
+  // ================= Mouse/desktop =================
 
   function onMouseMove(e) {
     const now = performance.now();
@@ -94,6 +137,8 @@
     mouseSpeed = Math.max(0, mouseSpeed - dt * 1800);
   }
 
+  // ================= Posição de fontes de tapa =================
+
   function getTrackedPalmPosition(handEl, out) {
     const component = handEl.components && handEl.components['hand-tracking-controls'];
     const joints = component && component.jointEls;
@@ -113,11 +158,9 @@
     return out;
   }
 
-  // ==========================================================================
-  //  NOVO: obtém a posição de "palma" de uma fonte (mão rastreada ou controle)
-  // ==========================================================================
   function getSourcePosition(src, out) {
     if (src.kind === 'hand') {
+      if (src.el.getAttribute('visible') === false) return false;
       const comp = src.el.components && src.el.components['hand-tracking-controls'];
       const joints = comp && comp.jointEls;
       if (!joints || !joints.length) return false;
@@ -132,9 +175,8 @@
     }
     if (src.kind === 'controller') {
       const comp = src.el.components && src.el.components['tracked-controls'];
-      if (!comp || !comp.controller) return false; // controle não conectado
+      if (!comp || !comp.controller) return false;
       src.el.object3D.getWorldPosition(out);
-      // desloca ~10cm para frente do grip, aproximando da "ponta" do controle
       const q = src.el.object3D.getWorldQuaternion(new THREE.Quaternion());
       const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(q);
       out.add(fwd.multiplyScalar(0.10));
@@ -147,20 +189,16 @@
     return false;
   }
 
-  // ==========================================================================
-  //  REESCRITO: detecta tapas tanto das mãos rastreadas quanto dos controles
-  //  (funciona com as duas mãos, mesmo quando o hand-tracking falha)
-  // ==========================================================================
   function detectHandSlaps(dt) {
     const inVR = scene.is('vr-mode');
 
     const sources = [];
     if (inVR) {
-      // Preferência: mãos rastreadas (mais precisas). Fallback: controles.
-      sources.push({ id: 'left',  el: leftTrackedHand,                     kind: 'hand' });
-      sources.push({ id: 'right', el: rightTrackedHand,                    kind: 'hand' });
-      sources.push({ id: 'left',  el: $('left-controller'),                kind: 'controller' });
-      sources.push({ id: 'right', el: $('right-controller'),               kind: 'controller' });
+      // Mãos rastreadas primeiro (mais precisas), depois controles como fallback
+      sources.push({ id: 'left',  el: leftTrackedHand,           kind: 'hand' });
+      sources.push({ id: 'right', el: rightTrackedHand,          kind: 'hand' });
+      sources.push({ id: 'left',  el: leftControllerEl,          kind: 'controller' });
+      sources.push({ id: 'right', el: rightControllerEl,         kind: 'controller' });
     } else {
       sources.push({ id: 'right', el: desktopRightHand, kind: 'desktop' });
     }
@@ -169,7 +207,7 @@
 
     for (const src of sources) {
       if (!src.el || !src.el.object3D) continue;
-      if (usedSides.has(src.id)) continue; // já tratamos este lado
+      if (usedSides.has(src.id)) continue;
 
       const world = new THREE.Vector3();
       if (!getSourcePosition(src, world)) continue;
@@ -177,7 +215,6 @@
 
       const prev = handSamples.get(src.id);
       let speed = 0;
-      // Só mede velocidade se a fonte for a mesma (evita falso "tapão" ao trocar mão↔controle)
       if (prev && prev.kind === src.kind) {
         speed = world.distanceTo(prev.pos) / Math.max(dt, 0.001);
       }
@@ -200,7 +237,7 @@
         if (d < closestDist) { closestDist = d; closest = bot; }
       }
 
-      const maxRange = src.kind === 'hand' ? 1.1 : src.kind === 'controller' ? 1.45 : 1.35;
+      const maxRange = src.kind === 'hand' ? 1.1 : src.kind === 'controller' ? 1.4 : 1.35;
       if (!closest || closestDist >= maxRange) continue;
 
       const botForward = new THREE.Vector3(0, 0, -1).applyQuaternion(closest.el.object3D.quaternion);
@@ -234,7 +271,7 @@
     if (head) {
       head.setAttribute('color', '#ffcc00');
       head.setAttribute('scale', '1.25 0.8 1.15');
-      setTimeout(() => { if (head.isConnected) { head.setAttribute('scale', '1 1 1'); } }, 350);
+      setTimeout(() => { if (head.isConnected) head.setAttribute('scale', '1 1 1'); }, 350);
     }
     let stars = bot.el.querySelector('.dizzy-stars');
     if (!stars) {
@@ -289,7 +326,17 @@
     slapEl = $('slap-val'); stunEl = $('stun-val');
     desktopHandsEl = $('desktop-hands'); desktopRightHand = $('desktop-right-hand'); desktopLeftHand = $('desktop-left-hand');
     leftTrackedHand = $('left-tracked-hand'); rightTrackedHand = $('right-tracked-hand');
-    buildDesktopHand(desktopLeftHand, true); buildDesktopHand(desktopRightHand, false);
+    leftControllerEl = $('left-controller'); rightControllerEl = $('right-controller');
+
+    buildDesktopHand(desktopLeftHand, true);
+    buildDesktopHand(desktopRightHand, false);
+
+    // ============ CHAVE DA CORREÇÃO ============
+    // Anexa mão 3D em cada controlador. Aparecem SEMPRE em VR.
+    attachVRHandToController(leftControllerEl, true);
+    attachVRHandToController(rightControllerEl, false);
+    // ==========================================
+
     if (!scene || !cameraEl || !rigEl) return;
     document.querySelectorAll('.hiding-spot').forEach(el => hidingSpots.push(el));
     BOT_SPAWNS.forEach((_, i) => bots.push(createBot(i)));
@@ -308,12 +355,12 @@
     $('controls-hint').textContent = 'PC: WASD/setas para mover · mouse para olhar.';
 
     scene.addEventListener('enter-vr', () => {
-      $('controls-hint').textContent = 'Quest: thumbstick do controle para andar · aproxime-se POR TRÁS e dê um tapa (mão ou controle).';
+      $('controls-hint').textContent = 'Quest: thumbstick p/ andar · aproxime por TRÁS e dê um tapa (mão/controle).';
       if (desktopHandsEl) desktopHandsEl.setAttribute('visible', 'false');
-      if (leftTrackedHand) leftTrackedHand.setAttribute('visible', 'true');
-      if (rightTrackedHand) rightTrackedHand.setAttribute('visible', 'true');
       if (vrHudEl) vrHudEl.setAttribute('visible', 'true');
+      // Não mexa em visible dos tracked-hands aqui; updateVRHandsVisibility cuida disso.
     });
+
     scene.addEventListener('exit-vr', () => {
       $('controls-hint').textContent = 'PC: WASD/setas para mover · mouse para olhar · mova o mouse rapidamente nas costas do robô.';
       if (desktopHandsEl) desktopHandsEl.setAttribute('visible', 'true');
@@ -321,6 +368,7 @@
       if (rightTrackedHand) rightTrackedHand.setAttribute('visible', 'false');
       if (vrHudEl) vrHudEl.setAttribute('visible', 'false');
     });
+
     requestAnimationFrame(loop);
   }
 
@@ -357,46 +405,43 @@
     rigEl.object3D.position.z += moveZ / len * speed;
   }
 
-  // ==========================================================================
-  //  NOVO: movimentação VR via thumbstick de qualquer controle (esquerdo ou direito)
-  // ==========================================================================
+  // ================= Movimento VR (thumbstick) =================
+
+  function readStick(controllerEl) {
+    if (!controllerEl) return { x: 0, y: 0 };
+    const comp = controllerEl.components && controllerEl.components['tracked-controls'];
+    if (!comp || !comp.controller || !comp.controller.gamepad) return { x: 0, y: 0 };
+    const gp = comp.controller.gamepad;
+    if (!gp.axes || gp.axes.length < 2) return { x: 0, y: 0 };
+    if (gp.axes.length >= 4) {
+      // xr-standard (Quest): thumbstick em 2/3, touchpad em 0/1
+      return { x: gp.axes[2] || 0, y: gp.axes[3] || 0 };
+    }
+    // fallback antigo (Vive/Daydream)
+    return { x: gp.axes[0] || 0, y: gp.axes[1] || 0 };
+  }
+
   function moveVRPlayer(dt) {
     if (!scene.is('vr-mode')) return;
 
+    // Lê os dois thumbsticks e usa o que estiver mais deslocado (permite andar com qualquer mão)
+    const stickL = readStick(leftControllerEl);
+    const stickR = readStick(rightControllerEl);
     let stickX = 0, stickY = 0;
-
-    for (const side of ['left', 'right']) {
-      const ctrl = $(side + '-controller');
-      if (!ctrl) continue;
-      const comp = ctrl.components && ctrl.components['tracked-controls'];
-      if (!comp || !comp.controller) continue;
-      const gp = comp.controller.gamepad;
-      if (!gp || !gp.axes || gp.axes.length < 2) continue;
-
-      let ax = 0, ay = 0;
-      if (gp.axes.length >= 4) {
-        // xr-standard: thumbstick nos índices 2/3 (touch/quest)
-        ax = gp.axes[2] || 0;
-        ay = gp.axes[3] || 0;
-      } else {
-        ax = gp.axes[0] || 0;
-        ay = gp.axes[1] || 0;
-      }
-
-      if (Math.abs(ax) > Math.abs(stickX)) stickX = ax;
-      if (Math.abs(ay) > Math.abs(stickY)) stickY = ay;
-    }
+    if (Math.abs(stickL.x) > Math.abs(stickX)) stickX = stickL.x;
+    if (Math.abs(stickR.x) > Math.abs(stickX)) stickX = stickR.x;
+    if (Math.abs(stickL.y) > Math.abs(stickY)) stickY = stickL.y;
+    if (Math.abs(stickR.y) > Math.abs(stickY)) stickY = stickR.y;
 
     const DZ = 0.15;
     if (Math.abs(stickX) < DZ) stickX = 0;
     if (Math.abs(stickY) < DZ) stickY = 0;
     if (!stickX && !stickY) return;
 
-    // Y negativo = empurrar para frente
-    const forward = -stickY;
+    const forward = -stickY; // empurrar para frente = andar para frente
     const side = stickX;
 
-    // Direção da cabeça em espaço de MUNDO (seguro em VR)
+    // Direção da cabeça em ESPAÇO DE MUNDO (seguro em VR)
     const camWorldQ = cameraEl.object3D.getWorldQuaternion(new THREE.Quaternion());
     const camFwd = new THREE.Vector3(0, 0, -1).applyQuaternion(camWorldQ);
     const yaw = Math.atan2(-camFwd.x, -camFwd.z);
@@ -405,12 +450,14 @@
     const moveZ = (-Math.cos(yaw) * forward - Math.sin(yaw) * side);
     const len = Math.hypot(moveX, moveZ) || 1;
 
-    const baseSpeed = 4.2;
+    const baseSpeed = 3.8;
     const speed = (isBoostActive ? baseSpeed * 1.8 : baseSpeed) * dt;
 
     rigEl.object3D.position.x += moveX / len * speed;
     rigEl.object3D.position.z += moveZ / len * speed;
   }
+
+  // ================= Powerups =================
 
   function createRayElement() {
     const rayContainer = document.createElement('a-entity');
@@ -535,8 +582,15 @@
       });
     }
 
-    if (leftTrackedHand) leftTrackedHand.setAttribute('hand-tracking-controls', `hand: left; modelStyle: mesh; modelColor: ${activeColor}`);
-    if (rightTrackedHand) rightTrackedHand.setAttribute('hand-tracking-controls', `hand: right; modelStyle: mesh; modelColor: ${activeColor}`);
+    // Não reconfigura hand-tracking-controls a cada frame (custa caro). Só quando a cor muda.
+    if (leftTrackedHand && leftTrackedHand._lastColor !== activeColor) {
+      leftTrackedHand._lastColor = activeColor;
+      leftTrackedHand.setAttribute('hand-tracking-controls', `hand: left; modelStyle: mesh; modelColor: ${activeColor}`);
+    }
+    if (rightTrackedHand && rightTrackedHand._lastColor !== activeColor) {
+      rightTrackedHand._lastColor = activeColor;
+      rightTrackedHand.setAttribute('hand-tracking-controls', `hand: right; modelStyle: mesh; modelColor: ${activeColor}`);
+    }
   }
 
   function updateBot(bot, playerPos, dt) {
@@ -725,13 +779,14 @@
     score = Math.floor(survivalTime * 10) + slapCount * 100;
     slapCooldown.left = Math.max(0, slapCooldown.left - dt);
     slapCooldown.right = Math.max(0, slapCooldown.right - dt);
+
+    updateVRHandsVisibility();  // <-- mantém mão do controle x mão rastreada corretas
     updateDesktopHand(dt);
     checkBotSpawns();
     moveDesktopPlayer(dt);
-    moveVRPlayer(dt); // <-- NOVO: locomoção por thumbstick em VR
+    moveVRPlayer(dt);           // <-- thumbstick
 
     const before = rigEl.object3D.position.clone();
-
     enforceVRWorldBoundsAndCollisions();
 
     cameraEl.object3D.getWorldPosition(tmpPlayer);
