@@ -42,12 +42,22 @@
   let powerupEntities = [];
 
   // ============================================================
-  // COMPONENTE: locomoção por thumbstick (VR)
-  // - Lê por DOIS caminhos: 'thumbstickmoved' (direto) e 'axismove'
-  //   (array completo, thumbstick = índices 2/3 no Quest).
-  // - Combina os dois controles: usa o que estiver mais deslocado.
-  // - Deadzone alta (0.25) para eliminar drift.
-  // - HUD de diagnóstico visível em VR com valores ao vivo.
+  // COMPONENTE game-loop:
+  // Executa a simulação em VR E desktop. Substitui o antigo
+  // requestAnimationFrame(loop), que NÃO roda em modo WebXR.
+  // ============================================================
+  AFRAME.registerComponent('game-loop', {
+    tick: function (time, delta) {
+      if (!scene || !scene.hasLoaded) return;
+      if (isGameOver) return;
+      // delta vem em ms; limita para evitar saltos enormes após tab em background
+      const dt = Math.max(0.001, Math.min(delta / 1000, 0.05));
+      updateGame(dt);
+    }
+  });
+
+  // ============================================================
+  // COMPONENTE vr-thumbstick-movement (locomoção VR)
   // ============================================================
   AFRAME.registerComponent('vr-thumbstick-movement', {
     schema: {
@@ -75,14 +85,10 @@
         const stickKey = side === 'left' ? 'stickL' : 'stickR';
         const rawKey = side === 'left' ? 'rawL' : 'rawR';
 
-        // Caminho 1: axismove sempre dispara — traz o array COMPLETO dos eixos.
-        // No Quest (xr-standard), axes[2]/[3] é o thumbstick, axes[0]/[1] é touchpad.
         ctrl.addEventListener('axismove', (evt) => {
           const a = evt.detail && evt.detail.axis;
           if (!a) return;
           for (let i = 0; i < 4; i++) self[rawKey][i] = (typeof a[i] === 'number') ? a[i] : 0;
-          // Thumbstick é 2/3 no Quest. Se forem 0 mas 0/1 têm valor,
-          // o controle mapeia o stick em 0/1 (raro, mas acontece).
           let x = self[rawKey][2];
           let y = self[rawKey][3];
           if (Math.abs(x) < 1e-3 && Math.abs(y) < 1e-3) {
@@ -96,7 +102,6 @@
           self._refreshDebugHud();
         });
 
-        // Caminho 2: thumbstickmoved (A-Frame extrai do gamepad).
         ctrl.addEventListener('thumbstickmoved', (evt) => {
           const d = evt.detail || {};
           if (typeof d.x === 'number') self[stickKey].x = d.x;
@@ -108,7 +113,6 @@
 
     _createDebugHud: function () {
       const self = this;
-      // Cria no próximo frame para o #camera já existir
       setTimeout(() => {
         const cam = document.querySelector('#camera');
         if (!cam) return;
@@ -134,7 +138,6 @@
         `rawL:${this.rawL.map(v => v.toFixed(1)).join(',')}  rawR:${this.rawR.map(v => v.toFixed(1)).join(',')}`;
       this.debugText.setAttribute('value', val);
       this.debugEl.setAttribute('visible', 'true');
-
       if (this.debugTimer) clearTimeout(this.debugTimer);
       this.debugTimer = setTimeout(() => {
         if (this.debugEl) this.debugEl.setAttribute('visible', 'false');
@@ -145,7 +148,6 @@
       const sceneEl = this.el.sceneEl;
       if (!sceneEl || !sceneEl.is('vr-mode')) return;
 
-      // Combina os dois controles: valor de maior magnitude por eixo
       let stickX = 0, stickY = 0;
       if (Math.abs(this.stickL.x) > Math.abs(stickX)) stickX = this.stickL.x;
       if (Math.abs(this.stickR.x) > Math.abs(stickX)) stickX = this.stickR.x;
@@ -162,7 +164,6 @@
 
       const dt = Math.min(delta / 1000, 0.05);
 
-      // Direção da cabeça em mundo
       const camQuat = new THREE.Quaternion();
       camera.getWorldQuaternion(camQuat);
       const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camQuat);
@@ -175,8 +176,6 @@
 
       const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
 
-      // xr-standard: thumbstick Y = -1 quando empurrado PRA CIMA (frente),
-      // +1 quando puxado pra baixo. Por isso forward = -stickY.
       const moveDir = new THREE.Vector3()
         .addScaledVector(forward, -stickY)
         .addScaledVector(right,   stickX);
@@ -476,8 +475,12 @@
     BOT_SPAWNS.forEach((_, i) => bots.push(createBot(i)));
     lastRigPos = rigEl.object3D.position.clone();
 
-    // Componente de locomoção VR no rig
+    // Locomoção VR
     rigEl.setAttribute('vr-thumbstick-movement', 'speed: 3.5; deadzone: 0.25');
+
+    // *** ESSENCIAL: registra o loop de simulação como componente A-Frame.
+    //     O tick roda tanto em desktop quanto em VR (WebXR). ***
+    scene.setAttribute('game-loop', '');
 
     $('btn-restart-2d').addEventListener('click', restartGame);
     $('btn-quit-2d').addEventListener('click', quitGame);
@@ -504,8 +507,6 @@
       if (rightTrackedHand) rightTrackedHand.setAttribute('visible', 'false');
       if (vrHudEl) vrHudEl.setAttribute('visible', 'false');
     });
-
-    requestAnimationFrame(loop);
   }
 
   function onKeyDown(e) {
@@ -850,12 +851,12 @@
     if (soundTimer >= interval) { soundTimer = 0; playBeep(chasing ? 1100 : 600, 0.07); }
   }
 
-  function loop(now) {
-    requestAnimationFrame(loop);
-    if (isGameOver || !scene.hasLoaded) return;
-    const dt = Math.min((loop.lastNow ? (now - loop.lastNow) : 16.67) / 1000, 0.05);
-    loop.lastNow = now;
-    if (dt <= 0) return;
+  // ============================================================
+  // updateGame(dt): a simulação completa.
+  // Chamada a partir do tick do componente game-loop.
+  // Roda em desktop E em VR (WebXR).
+  // ============================================================
+  function updateGame(dt) {
     survivalTime += dt;
     score = Math.floor(survivalTime * 10) + slapCount * 100;
     slapCooldown.left = Math.max(0, slapCooldown.left - dt);
@@ -865,7 +866,7 @@
     updateDesktopHand(dt);
     checkBotSpawns();
     moveDesktopPlayer(dt);
-    // Locomoção VR é feita pelo componente 'vr-thumbstick-movement'
+    // locomoção VR é feita pelo componente 'vr-thumbstick-movement' (tick próprio)
 
     const before = rigEl.object3D.position.clone();
     enforceVRWorldBoundsAndCollisions();
