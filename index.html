@@ -9,6 +9,69 @@
   <script src="https://aframe.io/releases/1.4.2/aframe.min.js"></script>
 </head>
 <body>
+
+  <!-- ===================================================== -->
+  <!-- MENU INICIAL                                          -->
+  <!-- ===================================================== -->
+  <div id="start-menu" role="dialog" aria-modal="true">
+    <div class="stars"></div>
+    <div class="grid-floor"></div>
+
+    <div class="menu-card">
+      <div class="logo-row">
+        <span class="logo-icon">🤖</span>
+        <h1 class="menu-title">ESCONDE-ESCONDE <span class="vr-tag">VR</span></h1>
+        <span class="logo-icon">🕵️</span>
+      </div>
+      <p class="menu-subtitle">
+        Camufle-se, dê tapas pelas costas e escape dos caçadores robóticos
+      </p>
+
+      <div class="menu-buttons">
+        <button id="btn-start-vr" class="menu-btn menu-btn-vr">
+          <span class="btn-emoji">🥽</span>
+          <span class="btn-text">
+            <span class="btn-title">ENTRAR NO VR</span>
+            <span class="btn-hint">Meta Quest · Controles</span>
+          </span>
+        </button>
+
+        <button id="btn-start-pc" class="menu-btn menu-btn-pc">
+          <span class="btn-emoji">🎮</span>
+          <span class="btn-text">
+            <span class="btn-title">JOGAR NO PC</span>
+            <span class="btn-hint">Teclado + Mouse</span>
+          </span>
+        </button>
+      </div>
+
+      <div class="menu-rules">
+        <div class="rule-card">
+          <div class="rule-icon">🎨</div>
+          <div class="rule-title">CAMUFLE-SE</div>
+          <div class="rule-text">Aproxime-se das formas geométricas para copiar a cor.</div>
+        </div>
+        <div class="rule-card">
+          <div class="rule-icon">👋</div>
+          <div class="rule-title">DÊ TAPAS</div>
+          <div class="rule-text">Acerte pelas costas e deixe o robô tonto.</div>
+        </div>
+        <div class="rule-card">
+          <div class="rule-icon">⚡</div>
+          <div class="rule-title">FUJA</div>
+          <div class="rule-text">Pegue raios e ganhe super velocidade para escapar.</div>
+        </div>
+      </div>
+
+      <div class="menu-footer">
+        ⚠️ Se a perseguição encher ou o robô te alcançar, é <strong>GAME OVER</strong>.
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================================================== -->
+  <!-- HUD 2D                                                -->
+  <!-- ===================================================== -->
   <div id="hud" aria-live="polite">
     <div class="hud-title">Esconde-Esconde VR</div>
     <div>TEMPO VIVO: <span id="time-val">0.0</span>s</div>
@@ -37,13 +100,11 @@
     <a-entity light="type: directional; intensity: 0.8" position="-1 8 2"></a-entity>
     <a-plane position="0 -0.03 0" rotation="-90 0 0" width="50" height="50" color="#22272b" material="roughness: 0.95"></a-plane>
 
-    <!-- Limites do mapa -->
     <a-box class="boundary" position="0 2.5 -24.5" width="50" height="5" depth="1" material="color: #00ffcc; wireframe: true"></a-box>
     <a-box class="boundary" position="0 2.5 24.5" width="50" height="5" depth="1" material="color: #00ffcc; wireframe: true"></a-box>
     <a-box class="boundary" position="-24.5 2.5 0" width="1" height="5" depth="50" material="color: #00ffcc; wireframe: true"></a-box>
     <a-box class="boundary" position="24.5 2.5 0" width="1" height="5" depth="50" material="color: #00ffcc; wireframe: true"></a-box>
 
-    <!-- Esconderijos -->
     <a-box class="hiding-spot" id="spot-red" position="-12 1.5 -12" width="3.2" height="3" depth="3.2" color="#ff3030" data-sizex="3.2" data-sizez="3.2"></a-box>
     <a-box class="hiding-spot" id="spot-blue" position="12 1.5 -12" width="3.2" height="3" depth="3.2" color="#2878ff" data-sizex="3.2" data-sizez="3.2"></a-box>
     <a-box class="hiding-spot" id="spot-green" position="-14 1.5 8" width="3.2" height="3" depth="3.2" color="#00bb65" data-sizex="3.2" data-sizez="3.2"></a-box>
@@ -68,13 +129,11 @@
       <a-entity id="camera" camera look-controls="pointerLockEnabled: false" position="0 1.6 0">
         <a-cursor id="cursor" raycaster="objects: .clickable; far: 10" fuse="false" color="#ffffff" scale="0.5 0.5 0.5"></a-cursor>
 
-        <!-- Mãos de demonstração para PC -->
         <a-entity id="desktop-hands" visible="true">
           <a-entity id="desktop-left-hand" position="-0.36 -0.28 -0.68" rotation="0 0 12"></a-entity>
           <a-entity id="desktop-right-hand" position="0.36 -0.28 -0.68" rotation="0 0 -12"></a-entity>
         </a-entity>
 
-        <!-- ============ VR HUD (canto superior esquerdo) ============ -->
         <a-entity id="vr-hud" position="-0.5 0.28 -1.2" visible="false">
           <a-plane width="0.9" height="0.45" color="#001c1a"
                    material="shader: flat; opacity: 0.85; side: double"></a-plane>
@@ -83,16 +142,13 @@
           <a-text id="vr-hud-stuns"    value="Tonteados: 0"     align="left" position="-0.4  0.03  0.01" width="0.8" color="#ff9bdb"></a-text>
           <a-text id="vr-hud-score"    value="Pts: 0"           align="left" position="-0.4 -0.04  0.01" width="0.8" color="#ffff00"></a-text>
           <a-text id="vr-hud-hunters"  value="Caçadores: 1/5"   align="left" position="-0.4 -0.11  0.01" width="0.8" color="#00ffcc"></a-text>
-          <a-plane width="0.8" height="0.03" color="#333"
-                   position="0 -0.18 0.01"></a-plane>
+          <a-plane width="0.8" height="0.03" color="#333" position="0 -0.18 0.01"></a-plane>
           <a-plane id="vr-hud-detection" width="0.8" height="0.026" color="#00ff00"
                    position="-0.4 -0.18 0.02" scale="0.0001 1 1"></a-plane>
         </a-entity>
       </a-entity>
 
-      <!-- Controles (stick + click) -->
-      <a-entity id="left-controller"
-                oculus-touch-controls="hand: left; model: false"></a-entity>
+      <a-entity id="left-controller" oculus-touch-controls="hand: left; model: false"></a-entity>
 
       <a-entity id="right-controller"
                 oculus-touch-controls="hand: right; model: false"
@@ -100,16 +156,10 @@
                 line="color: #00ffcc; opacity: 0.8"
                 vr-click-handler></a-entity>
 
-      <!-- Mãos nativas (quando o jogador solta os controles) -->
-      <a-entity id="left-tracked-hand"
-                hand-tracking-controls="hand: left; modelStyle: mesh; modelColor: #e8b99a"
-                visible="false"></a-entity>
-      <a-entity id="right-tracked-hand"
-                hand-tracking-controls="hand: right; modelStyle: mesh; modelColor: #e8b99a"
-                visible="false"></a-entity>
+      <a-entity id="left-tracked-hand"  hand-tracking-controls="hand: left;  modelStyle: mesh; modelColor: #e8b99a" visible="false"></a-entity>
+      <a-entity id="right-tracked-hand" hand-tracking-controls="hand: right; modelStyle: mesh; modelColor: #e8b99a" visible="false"></a-entity>
     </a-entity>
 
-    <!-- ============ Painel de Game Over (VR) ============ -->
     <a-entity id="vr-game-over-panel" visible="false" position="0 1.6 -2.5" scale="0.7 0.7 0.7">
       <a-plane width="3.5" height="2.2" color="#050505" material="shader: flat; opacity: 0.96"></a-plane>
       <a-plane width="3.55" height="2.25" position="0 0 -0.01" color="#ff2020" material="shader: flat; side: double"></a-plane>
