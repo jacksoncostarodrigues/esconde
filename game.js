@@ -17,7 +17,7 @@
     { x: 18, z: -10 }, { x: 0, z: -20 }
   ];
   const $ = id => document.getElementById(id);
-  let scene, cameraEl, rigEl, gameOverModalEl, vrPanelEl, alertEl;
+  let scene, cameraEl, rigEl, gameOverModalEl, vrPanelEl, alertEl, startMenuEl, hud2dEl;
   let vrHudEl, vrHudTimeEl, vrHudSlapsEl, vrHudStunsEl, vrHudScoreEl, vrHudHuntersEl, vrHudDetBar;
   let timeEl, scoreEl, finalScoreEl, botCountEl, botStatesEl, detectionFillEl, slapEl, stunEl;
   let slapCount = 0, mouseSpeed = 0, mouseLast = { x: 0, y: 0, t: 0 }, desktopThrust = 0;
@@ -26,6 +26,7 @@
   const handSamples = new Map();
   let slapCooldown = { left: 0, right: 0 };
   let survivalTime = 0, score = 0, isGameOver = false;
+  let gameStarted = false;
   let movementPenalty = 0, camoQuality = 0, soundTimer = 0;
   let playerWalkTime = 0, alertTimeout = null, audioCtx = null;
   let lastRigPos = null;
@@ -46,10 +47,12 @@
 
   // ============================================================
   // game-loop — roda a simulação em desktop E em VR (WebXR).
+  // Só roda depois que o jogo começa (gameStarted === true).
   // ============================================================
   AFRAME.registerComponent('game-loop', {
     tick: function (time, delta) {
       if (!scene || !scene.hasLoaded) return;
+      if (!gameStarted) return;
       if (isGameOver) return;
       const dt = Math.max(0.001, Math.min(delta / 1000, 0.05));
       updateGame(dt);
@@ -106,7 +109,6 @@
           if (!a) return;
           let x = (typeof a[2] === 'number') ? a[2] : 0;
           let y = (typeof a[3] === 'number') ? a[3] : 0;
-          // Fallback: se o thumbstick estiver mapeado em 0/1
           if (Math.abs(x) < 1e-3 && Math.abs(y) < 1e-3) {
             x = (typeof a[0] === 'number') ? a[0] : 0;
             y = (typeof a[1] === 'number') ? a[1] : 0;
@@ -124,6 +126,7 @@
     },
 
     tick: function (time, delta) {
+      if (!gameStarted) return;
       const sceneEl = this.el.sceneEl;
       if (!sceneEl || !sceneEl.is('vr-mode')) return;
 
@@ -435,6 +438,7 @@
   function init() {
     scene = $('game-scene'); cameraEl = $('camera'); rigEl = $('rig');
     gameOverModalEl = $('game-over-modal'); vrPanelEl = $('vr-game-over-panel'); alertEl = $('alert-overlay');
+    startMenuEl = $('start-menu'); hud2dEl = $('hud');
     vrHudEl = $('vr-hud');
     vrHudTimeEl = $('vr-hud-time');
     vrHudSlapsEl = $('vr-hud-slaps');
@@ -463,6 +467,44 @@
     rigEl.setAttribute('vr-thumbstick-movement', 'speed: 3.5; deadzone: 0.25');
     scene.setAttribute('game-loop', '');
 
+    // =========================
+    // Handlers do MENU INICIAL
+    // =========================
+    const btnVR = $('btn-start-vr');
+    const btnPC = $('btn-start-pc');
+
+    if (btnPC) {
+      btnPC.addEventListener('click', () => {
+        unlockAudio();
+        startGame(false);
+      });
+    }
+
+    if (btnVR) {
+      btnVR.addEventListener('click', () => {
+        unlockAudio();
+        // Solicita imersão XR (precisa ser chamado a partir de gesto do usuário)
+        const p = scene.enterVR ? scene.enterVR() : null;
+        const go = () => startGame(true);
+        if (p && typeof p.then === 'function') {
+          p.then(go).catch((err) => {
+            console.warn('[VR] Falha ao entrar em VR:', err);
+            alert('Não foi possível entrar no modo VR.\n\n' +
+                  'Verifique:\n• Headset conectado e navegador compatível (Chrome/Meta Quest Browser)\n' +
+                  '• Página servida em HTTPS ou localhost\n\n' +
+                  'O jogo vai iniciar em modo PC por enquanto.');
+            startGame(false);
+          });
+        } else {
+          // A-Frame antigo: promise não retornada — assume sucesso após um tick.
+          setTimeout(go, 200);
+        }
+      });
+    }
+
+    // =========================
+    // Restart / quit
+    // =========================
     $('btn-restart-2d').addEventListener('click', restartGame);
     $('btn-quit-2d').addEventListener('click', quitGame);
     $('vr-btn-restart').addEventListener('click', restartGame);
@@ -473,26 +515,52 @@
     window.addEventListener('blur', () => keys.clear());
     document.addEventListener('pointerdown', unlockAudio, { once: true });
     document.addEventListener('mousemove', onMouseMove, { passive: true });
-    $('controls-hint').textContent = 'PC: WASD/setas para mover · mouse para olhar.';
 
+    // Detecta entrada em VR pelo botão do menu
     scene.addEventListener('enter-vr', () => {
-      $('controls-hint').textContent = 'Quest: empurre o ANALÓGICO para andar · aproxime por TRÁS e dê um tapa.';
       if (desktopHandsEl) desktopHandsEl.setAttribute('visible', 'false');
-      if (vrHudEl) vrHudEl.setAttribute('visible', 'true');
+      if (vrHudEl && gameStarted) vrHudEl.setAttribute('visible', 'true');
+      $('controls-hint').textContent = 'Quest: empurre o ANALÓGICO para andar · aproxime por TRÁS e dê um tapa.';
     });
 
     scene.addEventListener('exit-vr', () => {
-      $('controls-hint').textContent = 'PC: WASD/setas para mover · mouse para olhar · mova o mouse rapidamente nas costas do robô.';
       if (desktopHandsEl) desktopHandsEl.setAttribute('visible', 'true');
       if (leftTrackedHand) leftTrackedHand.setAttribute('visible', 'false');
       if (rightTrackedHand) rightTrackedHand.setAttribute('visible', 'false');
       if (vrHudEl) vrHudEl.setAttribute('visible', 'false');
+      $('controls-hint').textContent = 'PC: WASD/setas para mover · mouse para olhar · mova o mouse rapidamente nas costas do robô.';
     });
+  }
+
+  /**
+   * Inicia o jogo a partir do menu.
+   * @param {boolean} vr - true se já estamos entrando em VR
+   */
+  function startGame(vr) {
+    if (gameStarted) return;
+    gameStarted = true;
+
+    if (startMenuEl) startMenuEl.classList.add('hidden');
+    if (hud2dEl && !vr) hud2dEl.classList.add('visible');
+
+    if (vr) {
+      if (vrHudEl) vrHudEl.setAttribute('visible', 'true');
+      if (desktopHandsEl) desktopHandsEl.setAttribute('visible', 'false');
+      if (hud2dEl) hud2dEl.classList.remove('visible');
+    } else {
+      $('controls-hint').textContent = 'PC: WASD/setas para mover · mouse para olhar.';
+    }
+
+    // Reset visual do rig caso tenha sobrado algo da cena inicial
+    rigEl.object3D.position.set(0, 0, 10);
+    rigEl.object3D.rotation.set(0, 0, 0);
+    lastRigPos.copy(rigEl.object3D.position);
   }
 
   function onKeyDown(e) {
     const key = e.key.toLowerCase();
     if (['w','a','s','d','arrowup','arrowdown','arrowleft','arrowright',' '].includes(key)) e.preventDefault();
+    if (!gameStarted) return;
     keys.add(key);
     if (key === 'r' && isGameOver) restartGame();
     unlockAudio();
