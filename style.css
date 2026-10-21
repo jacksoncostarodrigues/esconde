@@ -3,13 +3,316 @@
 html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; background: #050808; }
 body { font-family: Arial, Helvetica, sans-serif; }
 a-scene { position: fixed; inset: 0; }
+
+/* ============================================================
+   ESCONDE O BOTÃO PADRÃO DO A-FRAME (ficava no canto)
+   ============================================================ */
+.a-enter-vr, .a-enter-vr-button { display: none !important; }
+
+/* ============================================================
+   MENU INICIAL
+   ============================================================ */
+#start-menu {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  overflow-y: auto;
+  background:
+    radial-gradient(circle at 20% 15%, rgba(0, 255, 204, 0.10), transparent 45%),
+    radial-gradient(circle at 85% 85%, rgba(255, 0, 255, 0.10), transparent 45%),
+    radial-gradient(circle at 50% 50%, #071010 0%, #020404 100%);
+  animation: menuFadeIn 0.6s ease;
+}
+#start-menu.hidden { display: none; }
+@keyframes menuFadeIn {
+  from { opacity: 0; transform: scale(1.02); }
+  to   { opacity: 1; transform: scale(1); }
+}
+
+/* Estrelas animadas (pseudo-camada) */
+#start-menu .stars {
+  position: absolute;
+  inset: -10%;
+  background-image:
+    radial-gradient(1.5px 1.5px at 12% 22%, #00ffcc 50%, transparent),
+    radial-gradient(1px 1px at 28% 68%, #ffffff 50%, transparent),
+    radial-gradient(1.5px 1.5px at 55% 32%, #00ffcc 50%, transparent),
+    radial-gradient(1px 1px at 72% 78%, #ff66cc 50%, transparent),
+    radial-gradient(1.5px 1.5px at 88% 18%, #00ffcc 50%, transparent),
+    radial-gradient(1px 1px at 44% 88%, #ffffff 50%, transparent),
+    radial-gradient(1px 1px at 8% 82%, #ff66cc 50%, transparent),
+    radial-gradient(1.5px 1.5px at 92% 55%, #00ffcc 50%, transparent),
+    radial-gradient(1px 1px at 65% 8%, #ffffff 50%, transparent);
+  background-size: 100% 100%;
+  animation: driftStars 60s linear infinite;
+  opacity: 0.75;
+  pointer-events: none;
+}
+@keyframes driftStars {
+  0%   { transform: translate3d(0, 0, 0); }
+  100% { transform: translate3d(-40px, -80px, 0); }
+}
+
+/* Grade neon no chão (perspectiva) */
+#start-menu .grid-floor {
+  position: absolute;
+  bottom: -20%;
+  left: -20%;
+  right: -20%;
+  height: 55%;
+  background-image:
+    linear-gradient(rgba(0, 255, 204, 0.20) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 255, 204, 0.20) 1px, transparent 1px);
+  background-size: 60px 60px;
+  transform: perspective(600px) rotateX(62deg);
+  transform-origin: bottom center;
+  pointer-events: none;
+  mask-image: linear-gradient(to top, #000 20%, transparent 90%);
+  -webkit-mask-image: linear-gradient(to top, #000 20%, transparent 90%);
+  animation: gridScroll 20s linear infinite;
+}
+@keyframes gridScroll {
+  from { background-position: 0 0, 0 0; }
+  to   { background-position: 0 60px, 60px 0; }
+}
+
+/* Cartão central */
+.menu-card {
+  position: relative;
+  z-index: 2;
+  width: min(880px, 100%);
+  padding: 34px 34px 26px;
+  background: rgba(5, 12, 12, 0.88);
+  border: 2px solid rgba(0, 255, 204, 0.55);
+  border-radius: 18px;
+  box-shadow:
+    0 0 60px rgba(0, 255, 204, 0.15),
+    0 0 30px rgba(255, 0, 255, 0.08),
+    inset 0 0 40px rgba(0, 255, 204, 0.05);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  animation: cardRise 0.7s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+@keyframes cardRise {
+  from { transform: translateY(20px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+
+.logo-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin-bottom: 6px;
+}
+.logo-icon {
+  font-size: clamp(30px, 4vw, 48px);
+  filter: drop-shadow(0 0 10px rgba(0, 255, 204, 0.6));
+  animation: bob 3s ease-in-out infinite;
+}
+.logo-icon:nth-child(3) { animation-delay: 1.2s; }
+@keyframes bob {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-6px); }
+}
+
+.menu-title {
+  margin: 0;
+  font-family: 'Courier New', monospace;
+  font-size: clamp(22px, 4vw, 40px);
+  font-weight: 900;
+  letter-spacing: 3px;
+  color: #00ffcc;
+  text-shadow:
+    0 0 10px rgba(0, 255, 204, 0.9),
+    0 0 22px rgba(0, 255, 204, 0.5),
+    0 0 40px rgba(0, 255, 204, 0.25);
+  text-align: center;
+}
+.vr-tag {
+  display: inline-block;
+  padding: 2px 10px;
+  margin-left: 4px;
+  background: linear-gradient(135deg, #ff00aa, #00aaff);
+  color: #fff;
+  border-radius: 8px;
+  font-size: 0.7em;
+  text-shadow: none;
+  box-shadow: 0 0 20px rgba(255, 0, 170, 0.5);
+  vertical-align: middle;
+}
+
+.menu-subtitle {
+  margin: 6px 0 26px;
+  text-align: center;
+  color: #8fb7b4;
+  font-size: clamp(12px, 1.5vw, 15px);
+  letter-spacing: 0.5px;
+}
+
+/* ================= BOTÕES ================= */
+.menu-buttons {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 26px;
+}
+@media (max-width: 600px) {
+  .menu-buttons { grid-template-columns: 1fr; }
+}
+
+.menu-btn {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 22px 24px;
+  border-radius: 14px;
+  border: 2px solid transparent;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  transition: transform 0.15s ease, box-shadow 0.2s ease, background 0.2s ease;
+  overflow: hidden;
+}
+.menu-btn::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(120deg, transparent 40%, rgba(255,255,255,0.18) 50%, transparent 60%);
+  transform: translateX(-100%);
+  transition: transform 0.6s ease;
+  pointer-events: none;
+}
+.menu-btn:hover::before { transform: translateX(100%); }
+.menu-btn:hover { transform: translateY(-3px); }
+.menu-btn:active { transform: translateY(0); }
+
+.btn-emoji {
+  font-size: 42px;
+  filter: drop-shadow(0 0 8px rgba(0,0,0,0.6));
+  flex-shrink: 0;
+}
+.btn-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.btn-title {
+  font-size: clamp(16px, 2vw, 20px);
+  font-weight: 900;
+  letter-spacing: 1.5px;
+}
+.btn-hint {
+  font-size: 12px;
+  opacity: 0.75;
+  letter-spacing: 0.5px;
+}
+
+/* Botão VR — destaque com brilho pulsante */
+.menu-btn-vr {
+  border-color: #ff00aa;
+  background: linear-gradient(135deg, rgba(255, 0, 170, 0.25), rgba(0, 170, 255, 0.15));
+  box-shadow:
+    0 0 22px rgba(255, 0, 170, 0.5),
+    inset 0 0 30px rgba(255, 0, 170, 0.15);
+  animation: vrPulse 2.4s ease-in-out infinite;
+}
+@keyframes vrPulse {
+  0%, 100% {
+    box-shadow:
+      0 0 22px rgba(255, 0, 170, 0.5),
+      inset 0 0 30px rgba(255, 0, 170, 0.15);
+  }
+  50% {
+    box-shadow:
+      0 0 42px rgba(255, 0, 170, 0.9),
+      0 0 70px rgba(0, 170, 255, 0.4),
+      inset 0 0 40px rgba(255, 0, 170, 0.3);
+  }
+}
+.menu-btn-vr .btn-title { color: #ffb3e6; text-shadow: 0 0 8px rgba(255, 0, 170, 0.7); }
+.menu-btn-vr:hover {
+  background: linear-gradient(135deg, rgba(255, 0, 170, 0.45), rgba(0, 170, 255, 0.3));
+}
+
+/* Botão PC */
+.menu-btn-pc {
+  border-color: #00ffcc;
+  background: linear-gradient(135deg, rgba(0, 255, 204, 0.15), rgba(0, 100, 255, 0.1));
+  box-shadow: 0 0 22px rgba(0, 255, 204, 0.3);
+}
+.menu-btn-pc .btn-title { color: #a0ffec; text-shadow: 0 0 8px rgba(0, 255, 204, 0.6); }
+.menu-btn-pc:hover {
+  background: linear-gradient(135deg, rgba(0, 255, 204, 0.35), rgba(0, 100, 255, 0.25));
+  box-shadow: 0 0 36px rgba(0, 255, 204, 0.7);
+}
+
+/* ================= REGRAS ================= */
+.menu-rules {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+  margin-bottom: 22px;
+}
+@media (max-width: 600px) {
+  .menu-rules { grid-template-columns: 1fr; }
+}
+.rule-card {
+  padding: 14px 12px;
+  background: rgba(0, 255, 204, 0.05);
+  border: 1px solid rgba(0, 255, 204, 0.25);
+  border-radius: 10px;
+  text-align: center;
+  transition: transform 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+}
+.rule-card:hover {
+  transform: translateY(-3px);
+  border-color: rgba(0, 255, 204, 0.6);
+  background: rgba(0, 255, 204, 0.1);
+}
+.rule-icon { font-size: 28px; margin-bottom: 6px; }
+.rule-title {
+  color: #00ffcc;
+  font-weight: 900;
+  font-size: 12px;
+  letter-spacing: 1.5px;
+  margin-bottom: 6px;
+}
+.rule-text {
+  color: #9bc6c3;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.menu-footer {
+  text-align: center;
+  color: #d0d0d0;
+  font-size: 12px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(0, 255, 204, 0.15);
+}
+.menu-footer strong { color: #ff5050; }
+
+/* ============================================================
+   HUD 2D (durante o jogo)
+   ============================================================ */
 #hud {
   position: fixed; top: 15px; left: 15px; z-index: 999;
   width: min(310px, calc(100vw - 30px)); background: rgba(0,0,0,.88);
   color: #00ffcc; padding: 15px; font: 14px/1.5 "Courier New", monospace;
   border-radius: 10px; border: 2px solid #00ffcc; box-shadow: 0 0 15px rgba(0,255,204,.35);
   pointer-events: none;
+  display: none; /* escondido até iniciar */
 }
+#hud.visible { display: block; }
 .hud-title { font-weight: bold; color: #fff; margin-bottom: 8px; border-bottom: 1px solid #00ffcc; padding-bottom: 5px; text-transform: uppercase; letter-spacing: 1px; }
 .score { color: #ffff00; }
 #bot-states-list { margin-top: 6px; font-size: 12px; }
@@ -19,6 +322,7 @@ a-scene { position: fixed; inset: 0; }
 .controls-hint { margin-top: 8px; color: #b9c8c8; font: 11px/1.35 Arial, sans-serif; }
 #slap-val { color: #ffcf40; }
 #stun-val { color: #ff9bdb; }
+
 #game-over-modal { display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%); z-index: 1100; width: min(500px, calc(100vw - 30px)); background: rgba(0,0,0,.96); border: 3px solid #ff2020; padding: 26px; border-radius: 12px; text-align: center; box-shadow: 0 0 25px rgba(255,0,0,.55); }
 #game-over-modal h1 { color: #ff3030; margin: 0 0 10px; font-size: clamp(30px, 6vw, 42px); }
 #game-over-modal p { color: #fff; margin: 0 0 15px; font-size: 17px; }
