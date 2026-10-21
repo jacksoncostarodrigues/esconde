@@ -43,7 +43,7 @@
     <a-box class="boundary" position="-24.5 2.5 0" width="1" height="5" depth="50" material="color: #00ffcc; wireframe: true"></a-box>
     <a-box class="boundary" position="24.5 2.5 0" width="1" height="5" depth="50" material="color: #00ffcc; wireframe: true"></a-box>
 
-    <!-- Esconderijos: os objetos também funcionam como obstáculos -->
+    <!-- Esconderijos -->
     <a-box class="hiding-spot" id="spot-red" position="-12 1.5 -12" width="3.2" height="3" depth="3.2" color="#ff3030" data-sizex="3.2" data-sizez="3.2"></a-box>
     <a-box class="hiding-spot" id="spot-blue" position="12 1.5 -12" width="3.2" height="3" depth="3.2" color="#2878ff" data-sizex="3.2" data-sizez="3.2"></a-box>
     <a-box class="hiding-spot" id="spot-green" position="-14 1.5 8" width="3.2" height="3" depth="3.2" color="#00bb65" data-sizex="3.2" data-sizez="3.2"></a-box>
@@ -67,7 +67,6 @@
     <a-entity id="rig" position="0 0 10">
       <a-entity id="camera" camera look-controls="pointerLockEnabled: false" position="0 1.6 0">
         <a-cursor id="cursor" raycaster="objects: .clickable; far: 10" fuse="false" color="#ffffff" scale="0.5 0.5 0.5"></a-cursor>
-        <!-- Mãos de demonstração para PC; no Quest são escondidas e substituídas pelas mãos do controle ou pela mão rastreada. -->
         <a-entity id="desktop-hands" visible="true">
           <a-entity id="desktop-left-hand" position="-0.36 -0.28 -0.68" rotation="0 0 12"></a-entity>
           <a-entity id="desktop-right-hand" position="0.36 -0.28 -0.68" rotation="0 0 -12"></a-entity>
@@ -78,16 +77,17 @@
         </a-entity>
       </a-entity>
 
-      <!-- CONTROLES: model: false esconde o modelo padrão; a mão 3D criada pelo game.js aparece no lugar. -->
+      <!-- CONTROLES: oculus-touch-controls em AMBOS (necessário para emitir 'thumbstickmoved').
+           model: false esconde o modelo padrão; a mão 3D aparece no lugar. -->
       <a-entity id="left-controller"
                 oculus-touch-controls="hand: left; model: false"></a-entity>
 
       <a-entity id="right-controller"
-                laser-controls="hand: right; model: false"
+                oculus-touch-controls="hand: right; model: false"
                 raycaster="objects: .clickable; far: 10"
                 line="color: #00ffcc; opacity: 0.8"></a-entity>
 
-      <!-- Mãos nativas (WebXR hand-tracking): usadas quando o jogador solta os controles -->
+      <!-- Mãos nativas (quando o jogador solta os controles) -->
       <a-entity id="left-tracked-hand"
                 hand-tracking-controls="hand: left; modelStyle: mesh; modelColor: #e8b99a"
                 visible="false"></a-entity>
