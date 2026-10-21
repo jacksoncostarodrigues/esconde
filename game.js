@@ -663,3 +663,253 @@
       leftTrackedHand.setAttribute('hand-tracking-controls', `hand: left; modelStyle: mesh; modelColor: ${activeColor}`);
     }
     if (rightTrackedHand && rightTrackedHand._lastColor !== activeColor) {
+      rightTrackedHand._lastColor = activeColor;
+      rightTrackedHand.setAttribute('hand-tracking-controls', `hand: right; modelStyle: mesh; modelColor: ${activeColor}`);
+    }
+  }
+
+  function updateBot(bot, playerPos, dt) {
+    const p = bot.el.object3D.position; p.y = 0;
+    const dx = playerPos.x - p.x, dz = playerPos.z - p.z;
+    const dist = Math.hypot(dx, dz);
+    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(bot.el.object3D.quaternion);
+    tmpDir.set(dx, 0, dz).normalize();
+    const angle = dist > 0.001 ? forward.angleTo(tmpDir) * 180 / Math.PI : 0;
+    let sees = false;
+    if (dist <= BOT_CONFIG.viewDistance && angle <= BOT_CONFIG.viewAngleDeg / 2) {
+      const distanceFactor = 1 - dist / BOT_CONFIG.viewDistance;
+      const visibility = Math.max(0, Math.min(1, distanceFactor * 0.3 + movementPenalty * 0.5 - camoQuality * 0.4));
+      if (visibility > 0.1) { sees = true; bot.detectionMeter = Math.min(1, bot.detectionMeter + visibility * dt * BOT_CONFIG.detectionSpeed); bot.lastKnownPos = { x: playerPos.x, z: playerPos.z }; }
+    }
+    if (!sees) bot.detectionMeter = Math.max(0, bot.detectionMeter - BOT_CONFIG.detectionDecay * dt);
+    if (bot.stunned <= 0 && dist <= 1.55 && bot.detectionMeter >= BOT_CONFIG.chaseThreshold) { triggerGameOver(); return; }
+
+    let moving = false;
+    if (bot.stunned > 0) {
+      bot.stunned = Math.max(0, bot.stunned - dt); bot.dizzyTime += dt;
+      bot.detectionMeter = Math.max(0, bot.detectionMeter - dt * 1.2);
+      bot.el.object3D.rotation.z = Math.sin(bot.dizzyTime * 13) * 0.22;
+      bot.el.object3D.rotation.y += Math.sin(bot.dizzyTime * 9) * dt * 2.5;
+      const ar = bot.el.querySelector('.bot-arm-r'), al = bot.el.querySelector('.bot-arm-l');
+      if (ar) ar.setAttribute('rotation', `${Math.sin(bot.dizzyTime * 16) * 75} 0 25`);
+      if (al) al.setAttribute('rotation', `${-Math.sin(bot.dizzyTime * 16) * 75} 0 -25`);
+      if (bot.stunned === 0) { bot.el.object3D.rotation.z = 0; bot.state = 'Procurando'; bot.waitTime = 1.2; }
+      ['.bot-body', '.bot-visor', '.bot-antenna-light'].forEach(sel => { const el = bot.el.querySelector(sel); if (el) el.setAttribute('color', '#ffcc00'); });
+      return;
+    }
+    if (bot.state === 'Patrulhando') {
+      if (bot.detectionMeter >= BOT_CONFIG.chaseThreshold) bot.state = 'Perseguindo';
+      else if (bot.waitTime > 0) bot.waitTime -= dt;
+      else {
+        moveBot(bot, bot.currentPatrolTarget, BOT_CONFIG.patrolSpeed * dt); moving = true;
+        if (Math.hypot(p.x - bot.currentPatrolTarget.x, p.z - bot.currentPatrolTarget.z) < 1) { bot.currentPatrolTarget = randomWaypoint(); bot.waitTime = 0.7 + Math.random() * 1.4; }
+      }
+    } else if (bot.state === 'Perseguindo') {
+      if (bot.detectionMeter <= 0.2) bot.state = 'Procurando';
+      else { moveBot(bot, { x: playerPos.x, z: playerPos.z }, BOT_CONFIG.chaseSpeed * dt); moving = true; }
+    } else if (bot.state === 'Procurando') {
+      if (bot.detectionMeter >= BOT_CONFIG.chaseThreshold) bot.state = 'Perseguindo';
+      else {
+        moveBot(bot, bot.lastKnownPos, BOT_CONFIG.patrolSpeed * dt); moving = true;
+        if (Math.hypot(p.x - bot.lastKnownPos.x, p.z - bot.lastKnownPos.z) < 1) { bot.state = 'Patrulhando'; bot.currentPatrolTarget = randomWaypoint(); }
+      }
+    }
+    resolveBotObstacles(bot);
+    p.x = Math.max(-MAP_LIMIT, Math.min(MAP_LIMIT, p.x)); p.z = Math.max(-MAP_LIMIT, Math.min(MAP_LIMIT, p.z));
+    if (moving) bot.walkTime += dt * (bot.state === 'Perseguindo' ? 12 : 8);
+    animateBot(bot, moving);
+    const color = bot.state === 'Perseguindo' ? '#ff00ff' : bot.state === 'Procurando' ? '#ffff00' : '#00ff00';
+    ['.bot-body', '.bot-visor', '.bot-antenna-light'].forEach(sel => { const el = bot.el.querySelector(sel); if (el) el.setAttribute('color', color); });
+  }
+
+  function moveBot(bot, target, step) {
+    const p = bot.el.object3D.position, dx = target.x - p.x, dz = target.z - p.z, d = Math.hypot(dx, dz);
+    if (d > 0.05) { p.x += dx / d * step; p.z += dz / d * step; bot.el.object3D.rotation.y = Math.atan2(-dx, -dz); }
+  }
+
+  function resolveBotObstacles(bot) {
+    const p = bot.el.object3D.position;
+    for (const spot of hidingSpots) {
+      spot.object3D.getWorldPosition(tmpSpot);
+      const sx = parseFloat(spot.dataset.sizex || spot.dataset.size) || 2;
+      const sz = parseFloat(spot.dataset.sizez || spot.dataset.size) || 2;
+      const hx = sx / 2 + 0.55, hz = sz / 2 + 0.55;
+      const dx = p.x - tmpSpot.x, dz = p.z - tmpSpot.z;
+      if (Math.abs(dx) < hx && Math.abs(dz) < hz) {
+        if (hx - Math.abs(dx) < hz - Math.abs(dz)) p.x += dx >= 0 ? hx - Math.abs(dx) : -(hx - Math.abs(dx));
+        else p.z += dz >= 0 ? hz - Math.abs(dz) : -(hz - Math.abs(dz));
+        if (bot.state === 'Patrulhando') bot.currentPatrolTarget = randomWaypoint();
+      }
+    }
+  }
+
+  function animateBot(bot, moving) {
+    const aR = bot.el.querySelector('.bot-arm-r'), aL = bot.el.querySelector('.bot-arm-l');
+    const lR = bot.el.querySelector('.bot-leg-r'), lL = bot.el.querySelector('.bot-leg-l');
+    if (!aR || !aL || !lR || !lL) return;
+    const n = moving ? Math.sin(bot.walkTime) * 30 : 0;
+    lR.setAttribute('rotation', `${n} 0 0`); lL.setAttribute('rotation', `${-n} 0 0`);
+    aR.setAttribute('rotation', `${-n * 0.8} 0 8`); aL.setAttribute('rotation', `${n * 0.8} 0 -8`);
+  }
+
+  function updateHUD(maxDetection) {
+    const active = bots.filter(b => b.active).length;
+    if (timeEl) timeEl.textContent = survivalTime.toFixed(1);
+    if (scoreEl) scoreEl.textContent = String(score);
+    if (botCountEl) botCountEl.textContent = String(active);
+    if (slapEl) slapEl.textContent = String(slapCount);
+    if (stunEl) stunEl.textContent = String(bots.filter(b => b.active && b.stunned > 0).length);
+    if (botStatesEl) botStatesEl.innerHTML = bots.filter(b => b.active).map((b) => {
+      const c = b.state === 'Perseguindo' ? '#ff5555' : b.state === 'Procurando' ? '#ffff44' : '#00ffcc';
+      return `<div>Caçador ${bots.indexOf(b) + 1}: <span style="font-weight:bold;color:${c}">${b.state}</span></div>`;
+    }).join('');
+    if (detectionFillEl) {
+      detectionFillEl.style.width = `${Math.round(maxDetection * 100)}%`;
+      detectionFillEl.style.backgroundColor = `rgb(${Math.floor(maxDetection * 255)},${Math.floor((1 - maxDetection) * 255)},0)`;
+    }
+
+    if (vrHudTextEl) {
+      const boostText = isBoostActive ? ` | ⚡ RAIO (${boostTimer.toFixed(1)}s)` : '';
+      // Dica de stick no HUD VR (útil para o jogador saber onde empurrar)
+      vrHudTextEl.setAttribute('value', `Tempo: ${survivalTime.toFixed(1)}s | Pts: ${score}${boostText}`);
+    }
+  }
+
+  function triggerGameOver() {
+    if (isGameOver) return;
+    isGameOver = true;
+    if (finalScoreEl) finalScoreEl.textContent = String(score);
+    const vrFinalScore = $('vr-final-score');
+    if (vrFinalScore) vrFinalScore.setAttribute('value', `Pontuação: ${score}`);
+    if (gameOverModalEl) gameOverModalEl.style.display = 'block';
+    if (alertEl) alertEl.style.display = 'none';
+
+    const camPos = new THREE.Vector3(); cameraEl.object3D.getWorldPosition(camPos);
+    const camForward = new THREE.Vector3(0, 0, -1).applyQuaternion(cameraEl.object3D.getWorldQuaternion(new THREE.Quaternion())).normalize();
+    const panelPos = camPos.clone().add(camForward.multiplyScalar(2));
+    vrPanelEl.object3D.position.copy(panelPos);
+    vrPanelEl.object3D.lookAt(camPos);
+    vrPanelEl.setAttribute('visible', 'true');
+    playBeep(220, 0.4);
+  }
+
+  function restartGame() {
+    if (alertTimeout) { clearTimeout(alertTimeout); alertTimeout = null; }
+    isGameOver = false; survivalTime = 0; score = 0; slapCount = 0; movementPenalty = 0; camoQuality = 0; playerWalkTime = 0; soundTimer = 0; desktopThrust = 0; mouseSpeed = 0; slapCooldown = { left: 0, right: 0 }; handSamples.clear();
+    isBoostActive = false; boostTimer = 0; removeAllPowerups();
+    keys.clear();
+    rigEl.object3D.position.set(0, 0, 10);
+    rigEl.object3D.rotation.set(0, 0, 0);
+    cameraEl.object3D.position.set(0, 1.6, 0);
+    cameraEl.object3D.rotation.set(0, 0, 0);
+    cameraEl.setAttribute('rotation', '0 0 0');
+    bots.forEach((bot, i) => {
+      bot.detectionMeter = 0; bot.currentPatrolTarget = randomWaypoint(); bot.waitTime = 0; bot.walkTime = 0; bot.stunned = 0; bot.dizzyTime = 0; bot.slapCount = 0;
+      bot.lastKnownPos = { x: 0, z: 0 }; bot.el.object3D.position.set(bot.spawnPos.x, 0, bot.spawnPos.z);
+      bot.el.object3D.rotation.set(0, 0, 0);
+      const stars = bot.el.querySelector('.dizzy-stars');
+      if (stars) stars.setAttribute('visible', 'false');
+      ['.bot-body', '.bot-visor', '.bot-antenna-light'].forEach(sel => { const part = bot.el.querySelector(sel); if (part) part.setAttribute('color', '#00ff00'); });
+      ['.bot-arm-r', '.bot-arm-l', '.bot-leg-r', '.bot-leg-l'].forEach(sel => { const part = bot.el.querySelector(sel); if (part) part.setAttribute('rotation', '0 0 0'); });
+      bot.active = i === 0; bot.state = i === 0 ? 'Patrulhando' : 'Inativo';
+      bot.el.setAttribute('visible', i === 0 ? 'true' : 'false');
+    });
+    if (gameOverModalEl) gameOverModalEl.style.display = 'none';
+    if (vrPanelEl) vrPanelEl.setAttribute('visible', 'false');
+    if (alertEl) alertEl.style.display = 'none';
+    if (detectionFillEl) detectionFillEl.style.width = '0%'; if (slapEl) slapEl.textContent = '0'; if (stunEl) stunEl.textContent = '0'; lastRigPos.copy(rigEl.object3D.position);
+  }
+
+  function quitGame() {
+    if (scene && isInVR() && scene.exitVR) scene.exitVR();
+    if (gameOverModalEl) gameOverModalEl.style.display = 'none';
+    if (vrPanelEl) vrPanelEl.setAttribute('visible', 'false');
+    alert('Você saiu da partida. Atualize a página para jogar novamente.');
+  }
+
+  function playBeep(freq = 880, duration = 0.08) {
+    if (!audioCtx) return;
+    try {
+      const osc = audioCtx.createOscillator(), gain = audioCtx.createGain();
+      osc.type = 'square'; osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+      gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+      osc.connect(gain); gain.connect(audioCtx.destination); osc.start(); osc.stop(audioCtx.currentTime + duration);
+    } catch (_) { }
+  }
+
+  function handleEffects(detection, chasing, dt) {
+    if (detection <= 0.05) { soundTimer = 0; return; }
+    soundTimer += dt;
+    const interval = Math.max(0.15, 1 - detection * 0.85);
+    if (soundTimer >= interval) { soundTimer = 0; playBeep(chasing ? 1100 : 600, 0.07); }
+  }
+
+  function loop(now) {
+    requestAnimationFrame(loop);
+    if (isGameOver || !scene.hasLoaded) return;
+    const dt = Math.min((loop.lastNow ? (now - loop.lastNow) : 16.67) / 1000, 0.05);
+    loop.lastNow = now;
+    if (dt <= 0) return;
+    survivalTime += dt;
+    score = Math.floor(survivalTime * 10) + slapCount * 100;
+    slapCooldown.left = Math.max(0, slapCooldown.left - dt);
+    slapCooldown.right = Math.max(0, slapCooldown.right - dt);
+
+    updateVRHandsVisibility();
+    updateDesktopHand(dt);
+    checkBotSpawns();
+    moveDesktopPlayer(dt);
+    moveVRPlayer(dt);
+
+    const before = rigEl.object3D.position.clone();
+    enforceVRWorldBoundsAndCollisions();
+
+    cameraEl.object3D.getWorldPosition(tmpPlayer);
+    const distance = rigEl.object3D.position.distanceTo(before);
+    const speed = distance / dt;
+    if (speed > 0.15) { movementPenalty = Math.min(1, movementPenalty + 2.5 * dt); playerWalkTime += dt * Math.min(speed * 8, 15); }
+    else movementPenalty = Math.max(0, movementPenalty - 0.6 * dt);
+
+    calculateCamouflage(tmpPlayer);
+    detectHandSlaps(dt);
+
+    let maxDetection = 0, anyChasing = false;
+    bots.forEach(bot => {
+      if (!bot.active) return;
+      updateBot(bot, tmpPlayer, dt);
+      maxDetection = Math.max(maxDetection, bot.detectionMeter);
+      if (bot.state === 'Perseguindo') anyChasing = true;
+    });
+
+    if (anyChasing) {
+      const activeBotsCount = bots.filter(b => b.active).length;
+      syncPowerups(activeBotsCount);
+    } else {
+      removeAllPowerups();
+    }
+
+    powerupEntities.forEach(el => {
+      if (el && el.object3D) el.object3D.rotation.y += dt * 3.5;
+    });
+
+    if (isBoostActive) {
+      boostTimer -= dt;
+      if (boostTimer <= 0) {
+        isBoostActive = false;
+        alertEl.textContent = '⚡ Efeito do raio acabou!';
+        alertEl.style.display = 'block';
+        setTimeout(() => { if (!isGameOver) alertEl.style.display = 'none'; }, 1200);
+      }
+    }
+
+    checkPowerupPickup(tmpPlayer);
+
+    handleEffects(maxDetection, anyChasing, dt);
+    updateHUD(maxDetection);
+    lastRigPos.copy(rigEl.object3D.position);
+  }
+
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
+  else init();
+})();
