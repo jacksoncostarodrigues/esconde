@@ -41,6 +41,97 @@
   let boostTimer = 0;
   let powerupEntities = [];
 
+  // Debug pontual (só loga 1x se não achar nenhum gamepad em VR)
+  let _vrMoveDebugWarned = false;
+
+  // ================= helpers VR =================
+
+  // Detecção robusta de "estamos em VR" (A-Frame 1.4.x WebVR/WebXR)
+  function isInVR() {
+    if (!scene) return false;
+    if (typeof scene.is === 'function') {
+      if (scene.is('vr-mode')) return true;
+      if (scene.is('xr-mode')) return true;
+    }
+    if (scene.xrSession && scene.xrSession.mode && scene.xrSession.mode.indexOf('immersive') !== -1) return true;
+    return false;
+  }
+
+  // Obtém a sessão WebXR por vários caminhos (A-Frame expõe diferente entre versões)
+  function getXRSession() {
+    if (!scene) return null;
+
+    if (scene.xrSession) return scene.xrSession;
+
+    const webxrSys = scene.systems && scene.systems.webxr;
+    if (webxrSys) {
+      if (webxrSys.session) return webxrSys.session;
+      if (webxrSys.xrSession) return webxrSys.xrSession;
+    }
+
+    // Via Three.js renderer (A-Frame usa por baixo)
+    const tryRenderer = (r) => {
+      try {
+        if (r && r.xr && typeof r.xr.getSession === 'function') {
+          return r.xr.getSession();
+        }
+      } catch (e) {}
+      return null;
+    };
+    let s = tryRenderer(scene.renderer);
+    if (s) return s;
+    const rendererSys = scene.systems && scene.systems.renderer;
+    if (rendererSys) {
+      s = tryRenderer(rendererSys.renderer);
+      if (s) return s;
+    }
+
+    return null;
+  }
+
+  // Lê thumbstick priorizando a XRSession bruta, com fallback p/ componentes A-Frame
+  function readStick(side) {
+    // 1) Caminho preferido: XRSession.inputSources
+    const session = getXRSession();
+    if (session && session.inputSources) {
+      for (const src of session.inputSources) {
+        if (src.handedness === side && src.gamepad && src.gamepad.axes) {
+          const axes = src.gamepad.axes;
+          if (axes.length >= 4) {
+            return { x: axes[2] || 0, y: axes[3] || 0, found: true };
+          }
+          if (axes.length >= 2) {
+            return { x: axes[0] || 0, y: axes[1] || 0, found: true };
+          }
+        }
+      }
+    }
+
+    // 2) Fallback: componentes A-Frame
+    const el = $(side + '-controller');
+    if (!el || !el.components) return { x: 0, y: 0, found: false };
+
+    const candidates = [
+      el.components['tracked-controls'],
+      el.components['tracked-controls-webxr']
+    ];
+    for (const comp of candidates) {
+      if (!comp) continue;
+      let gp = null;
+      if (comp.controller) {
+        gp = comp.controller.gamepad || comp.controller;
+      }
+      if (!gp && comp.gamepad) gp = comp.gamepad;
+
+      if (gp && gp.axes) {
+        const axes = gp.axes;
+        if (axes.length >= 4) return { x: axes[2] || 0, y: axes[3] || 0, found: true };
+        if (axes.length >= 2) return { x: axes[0] || 0, y: axes[1] || 0, found: true };
+      }
+    }
+    return { x: 0, y: 0, found: false };
+  }
+
   // ================= Construção das mãos =================
 
   function buildDesktopHand(handEl, left) {
@@ -72,56 +163,46 @@
     handEl.setAttribute('scale', '1 1 1');
   }
 
-  /**
-   * Anexa uma mão 3D visível ao controlador VR.
-   * Isso faz a mão SEMPRE aparecer enquanto o controle estiver sendo rastreado,
-   * independentemente de hand-tracking estar ligado ou não.
-   */
   function attachVRHandToController(controllerEl, left) {
     if (!controllerEl || controllerEl.querySelector('.vr-hand')) return;
     const handEl = document.createElement('a-entity');
     handEl.classList.add('vr-hand');
     handEl.classList.add('hand-part');
     buildDesktopHand(handEl, left);
-    // buildDesktopHand seta scale 1; sobrescrevemos depois
     handEl.setAttribute('scale', '1.1 1.1 1.1');
     handEl.setAttribute('rotation', '-90 0 0');
     handEl.setAttribute('position', '0 0.02 -0.05');
     controllerEl.appendChild(handEl);
   }
 
-  /**
-   * Liga/desliga a mão do controle e da mão rastreada conforme o que está ativo.
-   * - Se o controle está sendo rastreado → mostra a mão do controle (a malha 3D).
-   * - Se hand-tracking nativo está ativo → mostra a mão rastreada.
-   */
   function updateVRHandsVisibility() {
-    if (!scene || !scene.is('vr-mode')) return;
+    if (!isInVR()) return;
     ['left', 'right'].forEach(side => {
       const ctrl = $(side + '-controller');
       if (!ctrl) return;
       const ctrlHand = ctrl.querySelector('.vr-hand');
       const trackedHand = $(side + '-tracked-hand');
 
-      const comp = ctrl.components && ctrl.components['tracked-controls'];
-      const hasController = !!(comp && comp.controller && comp.controller.gamepad);
+      // Se o gamepad existe, o controle está rastreado
+      const stick = readStick(side);
+      const hasController = stick.found;
 
       if (ctrlHand) ctrlHand.setAttribute('visible', hasController ? 'true' : 'false');
       if (trackedHand) trackedHand.setAttribute('visible', hasController ? 'false' : 'true');
     });
   }
 
-  // ================= Mouse/desktop =================
+  // ================= Mouse / Desktop =================
 
   function onMouseMove(e) {
     const now = performance.now();
     if (mouseLast.t) {
       const dt = Math.max(0.008, (now - mouseLast.t) / 1000);
       mouseSpeed = Math.hypot(e.clientX - mouseLast.x, e.clientY - mouseLast.y) / dt;
-      if (!scene?.is('vr-mode') && mouseSpeed > 850) desktopThrust = 0.24;
+      if (!isInVR() && mouseSpeed > 850) desktopThrust = 0.24;
     }
     mouseLast = { x: e.clientX, y: e.clientY, t: now };
-    if (!scene?.is('vr-mode') && desktopRightHand && cameraEl) {
+    if (!isInVR() && desktopRightHand && cameraEl) {
       const x = Math.max(-0.58, Math.min(0.58, (e.clientX / window.innerWidth - 0.5) * 1.15));
       const y = Math.max(-0.42, Math.min(0.28, (0.5 - e.clientY / window.innerHeight) * 0.75 - 0.18));
       desktopRightHand.object3D.position.x = x;
@@ -130,7 +211,7 @@
   }
 
   function updateDesktopHand(dt) {
-    if (!desktopRightHand || scene.is('vr-mode')) return;
+    if (!desktopRightHand || isInVR()) return;
     desktopThrust = Math.max(0, desktopThrust - dt * 0.9);
     const p = desktopRightHand.object3D.position;
     p.z = -0.68 - desktopThrust * 2.1;
@@ -174,8 +255,9 @@
       return true;
     }
     if (src.kind === 'controller') {
-      const comp = src.el.components && src.el.components['tracked-controls'];
-      if (!comp || !comp.controller) return false;
+      // Sempre usa o controller; se não há gamepad, ainda assim pega a posição do grip
+      const stick = readStick(src.id);
+      if (!stick.found) return false;
       src.el.object3D.getWorldPosition(out);
       const q = src.el.object3D.getWorldQuaternion(new THREE.Quaternion());
       const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(q);
@@ -190,17 +272,16 @@
   }
 
   function detectHandSlaps(dt) {
-    const inVR = scene.is('vr-mode');
+    const inVR = isInVR();
 
     const sources = [];
     if (inVR) {
-      // Mãos rastreadas primeiro (mais precisas), depois controles como fallback
-      sources.push({ id: 'left',  el: leftTrackedHand,           kind: 'hand' });
-      sources.push({ id: 'right', el: rightTrackedHand,          kind: 'hand' });
-      sources.push({ id: 'left',  el: leftControllerEl,          kind: 'controller' });
-      sources.push({ id: 'right', el: rightControllerEl,         kind: 'controller' });
+      sources.push({ id: 'left',  el: leftTrackedHand,   kind: 'hand' });
+      sources.push({ id: 'right', el: rightTrackedHand,  kind: 'hand' });
+      sources.push({ id: 'left',  el: leftControllerEl,  kind: 'controller' });
+      sources.push({ id: 'right', el: rightControllerEl, kind: 'controller' });
     } else {
-      sources.push({ id: 'right', el: desktopRightHand, kind: 'desktop' });
+      sources.push({ id: 'right', el: desktopRightHand,  kind: 'desktop' });
     }
 
     const usedSides = new Set();
@@ -271,7 +352,7 @@
     if (head) {
       head.setAttribute('color', '#ffcc00');
       head.setAttribute('scale', '1.25 0.8 1.15');
-      setTimeout(() => { if (head.isConnected) head.setAttribute('scale', '1 1 1'); }, 350);
+      setTimeout(() => { if (head.isConnected) { head.setAttribute('scale', '1 1 1'); } }, 350);
     }
     let stars = bot.el.querySelector('.dizzy-stars');
     if (!stars) {
@@ -331,11 +412,8 @@
     buildDesktopHand(desktopLeftHand, true);
     buildDesktopHand(desktopRightHand, false);
 
-    // ============ CHAVE DA CORREÇÃO ============
-    // Anexa mão 3D em cada controlador. Aparecem SEMPRE em VR.
     attachVRHandToController(leftControllerEl, true);
     attachVRHandToController(rightControllerEl, false);
-    // ==========================================
 
     if (!scene || !cameraEl || !rigEl) return;
     document.querySelectorAll('.hiding-spot').forEach(el => hidingSpots.push(el));
@@ -355,10 +433,9 @@
     $('controls-hint').textContent = 'PC: WASD/setas para mover · mouse para olhar.';
 
     scene.addEventListener('enter-vr', () => {
-      $('controls-hint').textContent = 'Quest: thumbstick p/ andar · aproxime por TRÁS e dê um tapa (mão/controle).';
+      $('controls-hint').textContent = 'Quest: empurre o thumbstick do controle para andar · aproxime por TRÁS e dê um tapa.';
       if (desktopHandsEl) desktopHandsEl.setAttribute('visible', 'false');
       if (vrHudEl) vrHudEl.setAttribute('visible', 'true');
-      // Não mexa em visible dos tracked-hands aqui; updateVRHandsVisibility cuida disso.
     });
 
     scene.addEventListener('exit-vr', () => {
@@ -389,7 +466,7 @@
   }
 
   function moveDesktopPlayer(dt) {
-    if (scene.is('vr-mode')) return;
+    if (isInVR()) return;
     const forward = (keys.has('w') || keys.has('arrowup') ? 1 : 0) - (keys.has('s') || keys.has('arrowdown') ? 1 : 0);
     const side = (keys.has('d') || keys.has('arrowright') ? 1 : 0) - (keys.has('a') || keys.has('arrowleft') ? 1 : 0);
     if (!forward && !side) return;
@@ -405,28 +482,27 @@
     rigEl.object3D.position.z += moveZ / len * speed;
   }
 
-  // ================= Movimento VR (thumbstick) =================
-
-  function readStick(controllerEl) {
-    if (!controllerEl) return { x: 0, y: 0 };
-    const comp = controllerEl.components && controllerEl.components['tracked-controls'];
-    if (!comp || !comp.controller || !comp.controller.gamepad) return { x: 0, y: 0 };
-    const gp = comp.controller.gamepad;
-    if (!gp.axes || gp.axes.length < 2) return { x: 0, y: 0 };
-    if (gp.axes.length >= 4) {
-      // xr-standard (Quest): thumbstick em 2/3, touchpad em 0/1
-      return { x: gp.axes[2] || 0, y: gp.axes[3] || 0 };
-    }
-    // fallback antigo (Vive/Daydream)
-    return { x: gp.axes[0] || 0, y: gp.axes[1] || 0 };
-  }
-
+  // ============ MOVIMENTAÇÃO VR via thumbstick (CORRIGIDA) ============
   function moveVRPlayer(dt) {
-    if (!scene.is('vr-mode')) return;
+    if (!isInVR()) return;
 
-    // Lê os dois thumbsticks e usa o que estiver mais deslocado (permite andar com qualquer mão)
-    const stickL = readStick(leftControllerEl);
-    const stickR = readStick(rightControllerEl);
+    const stickL = readStick('left');
+    const stickR = readStick('right');
+
+    // Aviso único caso nenhum caminho consiga achar o gamepad
+    if (!_vrMoveDebugWarned && !stickL.found && !stickR.found) {
+      _vrMoveDebugWarned = true;
+      console.warn('[VR] Nenhum gamepad encontrado. Debug:', {
+        isInVR: isInVR(),
+        xrSession: !!getXRSession(),
+        inputSources: getXRSession() && getXRSession().inputSources ? getXRSession().inputSources.length : 'n/a',
+        leftTC: !!(leftControllerEl && leftControllerEl.components['tracked-controls']),
+        leftTCW: !!(leftControllerEl && leftControllerEl.components['tracked-controls-webxr']),
+        rightTC: !!(rightControllerEl && rightControllerEl.components['tracked-controls']),
+        rightTCW: !!(rightControllerEl && rightControllerEl.components['tracked-controls-webxr'])
+      });
+    }
+
     let stickX = 0, stickY = 0;
     if (Math.abs(stickL.x) > Math.abs(stickX)) stickX = stickL.x;
     if (Math.abs(stickR.x) > Math.abs(stickX)) stickX = stickR.x;
@@ -438,13 +514,13 @@
     if (Math.abs(stickY) < DZ) stickY = 0;
     if (!stickX && !stickY) return;
 
-    const forward = -stickY; // empurrar para frente = andar para frente
-    const side = stickX;
-
-    // Direção da cabeça em ESPAÇO DE MUNDO (seguro em VR)
+    // Direção da cabeça em espaço de MUNDO (funciona em VR)
     const camWorldQ = cameraEl.object3D.getWorldQuaternion(new THREE.Quaternion());
     const camFwd = new THREE.Vector3(0, 0, -1).applyQuaternion(camWorldQ);
     const yaw = Math.atan2(-camFwd.x, -camFwd.z);
+
+    const forward = -stickY; // thumbstick pra cima = andar pra frente
+    const side = stickX;
 
     const moveX = (-Math.sin(yaw) * forward + Math.cos(yaw) * side);
     const moveZ = (-Math.cos(yaw) * forward - Math.sin(yaw) * side);
@@ -457,7 +533,7 @@
     rigEl.object3D.position.z += moveZ / len * speed;
   }
 
-  // ================= Powerups =================
+  // ================= Powerups (raios) =================
 
   function createRayElement() {
     const rayContainer = document.createElement('a-entity');
@@ -582,258 +658,8 @@
       });
     }
 
-    // Não reconfigura hand-tracking-controls a cada frame (custa caro). Só quando a cor muda.
     if (leftTrackedHand && leftTrackedHand._lastColor !== activeColor) {
       leftTrackedHand._lastColor = activeColor;
       leftTrackedHand.setAttribute('hand-tracking-controls', `hand: left; modelStyle: mesh; modelColor: ${activeColor}`);
     }
     if (rightTrackedHand && rightTrackedHand._lastColor !== activeColor) {
-      rightTrackedHand._lastColor = activeColor;
-      rightTrackedHand.setAttribute('hand-tracking-controls', `hand: right; modelStyle: mesh; modelColor: ${activeColor}`);
-    }
-  }
-
-  function updateBot(bot, playerPos, dt) {
-    const p = bot.el.object3D.position; p.y = 0;
-    const dx = playerPos.x - p.x, dz = playerPos.z - p.z;
-    const dist = Math.hypot(dx, dz);
-    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(bot.el.object3D.quaternion);
-    tmpDir.set(dx, 0, dz).normalize();
-    const angle = dist > 0.001 ? forward.angleTo(tmpDir) * 180 / Math.PI : 0;
-    let sees = false;
-    if (dist <= BOT_CONFIG.viewDistance && angle <= BOT_CONFIG.viewAngleDeg / 2) {
-      const distanceFactor = 1 - dist / BOT_CONFIG.viewDistance;
-      const visibility = Math.max(0, Math.min(1, distanceFactor * 0.3 + movementPenalty * 0.5 - camoQuality * 0.4));
-      if (visibility > 0.1) { sees = true; bot.detectionMeter = Math.min(1, bot.detectionMeter + visibility * dt * BOT_CONFIG.detectionSpeed); bot.lastKnownPos = { x: playerPos.x, z: playerPos.z }; }
-    }
-    if (!sees) bot.detectionMeter = Math.max(0, bot.detectionMeter - BOT_CONFIG.detectionDecay * dt);
-    if (bot.stunned <= 0 && dist <= 1.55 && bot.detectionMeter >= BOT_CONFIG.chaseThreshold) { triggerGameOver(); return; }
-
-    let moving = false;
-    if (bot.stunned > 0) {
-      bot.stunned = Math.max(0, bot.stunned - dt); bot.dizzyTime += dt;
-      bot.detectionMeter = Math.max(0, bot.detectionMeter - dt * 1.2);
-      bot.el.object3D.rotation.z = Math.sin(bot.dizzyTime * 13) * 0.22;
-      bot.el.object3D.rotation.y += Math.sin(bot.dizzyTime * 9) * dt * 2.5;
-      const ar = bot.el.querySelector('.bot-arm-r'), al = bot.el.querySelector('.bot-arm-l');
-      if (ar) ar.setAttribute('rotation', `${Math.sin(bot.dizzyTime * 16) * 75} 0 25`);
-      if (al) al.setAttribute('rotation', `${-Math.sin(bot.dizzyTime * 16) * 75} 0 -25`);
-      if (bot.stunned === 0) { bot.el.object3D.rotation.z = 0; bot.state = 'Procurando'; bot.waitTime = 1.2; }
-      ['.bot-body', '.bot-visor', '.bot-antenna-light'].forEach(sel => { const el = bot.el.querySelector(sel); if (el) el.setAttribute('color', '#ffcc00'); });
-      return;
-    }
-    if (bot.state === 'Patrulhando') {
-      if (bot.detectionMeter >= BOT_CONFIG.chaseThreshold) bot.state = 'Perseguindo';
-      else if (bot.waitTime > 0) bot.waitTime -= dt;
-      else {
-        moveBot(bot, bot.currentPatrolTarget, BOT_CONFIG.patrolSpeed * dt); moving = true;
-        if (Math.hypot(p.x - bot.currentPatrolTarget.x, p.z - bot.currentPatrolTarget.z) < 1) { bot.currentPatrolTarget = randomWaypoint(); bot.waitTime = 0.7 + Math.random() * 1.4; }
-      }
-    } else if (bot.state === 'Perseguindo') {
-      if (bot.detectionMeter <= 0.2) bot.state = 'Procurando';
-      else { moveBot(bot, { x: playerPos.x, z: playerPos.z }, BOT_CONFIG.chaseSpeed * dt); moving = true; }
-    } else if (bot.state === 'Procurando') {
-      if (bot.detectionMeter >= BOT_CONFIG.chaseThreshold) bot.state = 'Perseguindo';
-      else {
-        moveBot(bot, bot.lastKnownPos, BOT_CONFIG.patrolSpeed * dt); moving = true;
-        if (Math.hypot(p.x - bot.lastKnownPos.x, p.z - bot.lastKnownPos.z) < 1) { bot.state = 'Patrulhando'; bot.currentPatrolTarget = randomWaypoint(); }
-      }
-    }
-    resolveBotObstacles(bot);
-    p.x = Math.max(-MAP_LIMIT, Math.min(MAP_LIMIT, p.x)); p.z = Math.max(-MAP_LIMIT, Math.min(MAP_LIMIT, p.z));
-    if (moving) bot.walkTime += dt * (bot.state === 'Perseguindo' ? 12 : 8);
-    animateBot(bot, moving);
-    const color = bot.state === 'Perseguindo' ? '#ff00ff' : bot.state === 'Procurando' ? '#ffff00' : '#00ff00';
-    ['.bot-body', '.bot-visor', '.bot-antenna-light'].forEach(sel => { const el = bot.el.querySelector(sel); if (el) el.setAttribute('color', color); });
-  }
-
-  function moveBot(bot, target, step) {
-    const p = bot.el.object3D.position, dx = target.x - p.x, dz = target.z - p.z, d = Math.hypot(dx, dz);
-    if (d > 0.05) { p.x += dx / d * step; p.z += dz / d * step; bot.el.object3D.rotation.y = Math.atan2(-dx, -dz); }
-  }
-
-  function resolveBotObstacles(bot) {
-    const p = bot.el.object3D.position;
-    for (const spot of hidingSpots) {
-      spot.object3D.getWorldPosition(tmpSpot);
-      const sx = parseFloat(spot.dataset.sizex || spot.dataset.size) || 2;
-      const sz = parseFloat(spot.dataset.sizez || spot.dataset.size) || 2;
-      const hx = sx / 2 + 0.55, hz = sz / 2 + 0.55;
-      const dx = p.x - tmpSpot.x, dz = p.z - tmpSpot.z;
-      if (Math.abs(dx) < hx && Math.abs(dz) < hz) {
-        if (hx - Math.abs(dx) < hz - Math.abs(dz)) p.x += dx >= 0 ? hx - Math.abs(dx) : -(hx - Math.abs(dx));
-        else p.z += dz >= 0 ? hz - Math.abs(dz) : -(hz - Math.abs(dz));
-        if (bot.state === 'Patrulhando') bot.currentPatrolTarget = randomWaypoint();
-      }
-    }
-  }
-
-  function animateBot(bot, moving) {
-    const aR = bot.el.querySelector('.bot-arm-r'), aL = bot.el.querySelector('.bot-arm-l');
-    const lR = bot.el.querySelector('.bot-leg-r'), lL = bot.el.querySelector('.bot-leg-l');
-    if (!aR || !aL || !lR || !lL) return;
-    const n = moving ? Math.sin(bot.walkTime) * 30 : 0;
-    lR.setAttribute('rotation', `${n} 0 0`); lL.setAttribute('rotation', `${-n} 0 0`);
-    aR.setAttribute('rotation', `${-n * 0.8} 0 8`); aL.setAttribute('rotation', `${n * 0.8} 0 -8`);
-  }
-
-  function updateHUD(maxDetection) {
-    const active = bots.filter(b => b.active).length;
-    if (timeEl) timeEl.textContent = survivalTime.toFixed(1);
-    if (scoreEl) scoreEl.textContent = String(score);
-    if (botCountEl) botCountEl.textContent = String(active);
-    if (slapEl) slapEl.textContent = String(slapCount);
-    if (stunEl) stunEl.textContent = String(bots.filter(b => b.active && b.stunned > 0).length);
-    if (botStatesEl) botStatesEl.innerHTML = bots.filter(b => b.active).map((b) => {
-      const c = b.state === 'Perseguindo' ? '#ff5555' : b.state === 'Procurando' ? '#ffff44' : '#00ffcc';
-      return `<div>Caçador ${bots.indexOf(b) + 1}: <span style="font-weight:bold;color:${c}">${b.state}</span></div>`;
-    }).join('');
-    if (detectionFillEl) {
-      detectionFillEl.style.width = `${Math.round(maxDetection * 100)}%`;
-      detectionFillEl.style.backgroundColor = `rgb(${Math.floor(maxDetection * 255)},${Math.floor((1 - maxDetection) * 255)},0)`;
-    }
-
-    if (vrHudTextEl) {
-      const boostText = isBoostActive ? ` | ⚡ RAIO (${boostTimer.toFixed(1)}s)` : '';
-      vrHudTextEl.setAttribute('value', `Tempo: ${survivalTime.toFixed(1)}s | Pts: ${score}${boostText}`);
-    }
-  }
-
-  function triggerGameOver() {
-    if (isGameOver) return;
-    isGameOver = true;
-    if (finalScoreEl) finalScoreEl.textContent = String(score);
-    const vrFinalScore = $('vr-final-score');
-    if (vrFinalScore) vrFinalScore.setAttribute('value', `Pontuação: ${score}`);
-    if (gameOverModalEl) gameOverModalEl.style.display = 'block';
-    if (alertEl) alertEl.style.display = 'none';
-
-    const camPos = new THREE.Vector3(); cameraEl.object3D.getWorldPosition(camPos);
-    const camForward = new THREE.Vector3(0, 0, -1).applyQuaternion(cameraEl.object3D.getWorldQuaternion(new THREE.Quaternion())).normalize();
-    const panelPos = camPos.clone().add(camForward.multiplyScalar(2));
-    vrPanelEl.object3D.position.copy(panelPos);
-    vrPanelEl.object3D.lookAt(camPos);
-    vrPanelEl.setAttribute('visible', 'true');
-    playBeep(220, 0.4);
-  }
-
-  function restartGame() {
-    if (alertTimeout) { clearTimeout(alertTimeout); alertTimeout = null; }
-    isGameOver = false; survivalTime = 0; score = 0; slapCount = 0; movementPenalty = 0; camoQuality = 0; playerWalkTime = 0; soundTimer = 0; desktopThrust = 0; mouseSpeed = 0; slapCooldown = { left: 0, right: 0 }; handSamples.clear();
-    isBoostActive = false; boostTimer = 0; removeAllPowerups();
-    keys.clear();
-    rigEl.object3D.position.set(0, 0, 10);
-    rigEl.object3D.rotation.set(0, 0, 0);
-    cameraEl.object3D.position.set(0, 1.6, 0);
-    cameraEl.object3D.rotation.set(0, 0, 0);
-    cameraEl.setAttribute('rotation', '0 0 0');
-    bots.forEach((bot, i) => {
-      bot.detectionMeter = 0; bot.currentPatrolTarget = randomWaypoint(); bot.waitTime = 0; bot.walkTime = 0; bot.stunned = 0; bot.dizzyTime = 0; bot.slapCount = 0;
-      bot.lastKnownPos = { x: 0, z: 0 }; bot.el.object3D.position.set(bot.spawnPos.x, 0, bot.spawnPos.z);
-      bot.el.object3D.rotation.set(0, 0, 0);
-      const stars = bot.el.querySelector('.dizzy-stars');
-      if (stars) stars.setAttribute('visible', 'false');
-      ['.bot-body', '.bot-visor', '.bot-antenna-light'].forEach(sel => { const part = bot.el.querySelector(sel); if (part) part.setAttribute('color', '#00ff00'); });
-      ['.bot-arm-r', '.bot-arm-l', '.bot-leg-r', '.bot-leg-l'].forEach(sel => { const part = bot.el.querySelector(sel); if (part) part.setAttribute('rotation', '0 0 0'); });
-      bot.active = i === 0; bot.state = i === 0 ? 'Patrulhando' : 'Inativo';
-      bot.el.setAttribute('visible', i === 0 ? 'true' : 'false');
-    });
-    if (gameOverModalEl) gameOverModalEl.style.display = 'none';
-    if (vrPanelEl) vrPanelEl.setAttribute('visible', 'false');
-    if (alertEl) alertEl.style.display = 'none';
-    if (detectionFillEl) detectionFillEl.style.width = '0%'; if (slapEl) slapEl.textContent = '0'; if (stunEl) stunEl.textContent = '0'; lastRigPos.copy(rigEl.object3D.position);
-  }
-
-  function quitGame() {
-    if (scene && scene.is('vr-mode') && scene.exitVR) scene.exitVR();
-    if (gameOverModalEl) gameOverModalEl.style.display = 'none';
-    if (vrPanelEl) vrPanelEl.setAttribute('visible', 'false');
-    alert('Você saiu da partida. Atualize a página para jogar novamente.');
-  }
-
-  function playBeep(freq = 880, duration = 0.08) {
-    if (!audioCtx) return;
-    try {
-      const osc = audioCtx.createOscillator(), gain = audioCtx.createGain();
-      osc.type = 'square'; osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
-      gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
-      osc.connect(gain); gain.connect(audioCtx.destination); osc.start(); osc.stop(audioCtx.currentTime + duration);
-    } catch (_) { }
-  }
-
-  function handleEffects(detection, chasing, dt) {
-    if (detection <= 0.05) { soundTimer = 0; return; }
-    soundTimer += dt;
-    const interval = Math.max(0.15, 1 - detection * 0.85);
-    if (soundTimer >= interval) { soundTimer = 0; playBeep(chasing ? 1100 : 600, 0.07); }
-  }
-
-  function loop(now) {
-    requestAnimationFrame(loop);
-    if (isGameOver || !scene.hasLoaded) return;
-    const dt = Math.min((loop.lastNow ? (now - loop.lastNow) : 16.67) / 1000, 0.05);
-    loop.lastNow = now;
-    if (dt <= 0) return;
-    survivalTime += dt;
-    score = Math.floor(survivalTime * 10) + slapCount * 100;
-    slapCooldown.left = Math.max(0, slapCooldown.left - dt);
-    slapCooldown.right = Math.max(0, slapCooldown.right - dt);
-
-    updateVRHandsVisibility();  // <-- mantém mão do controle x mão rastreada corretas
-    updateDesktopHand(dt);
-    checkBotSpawns();
-    moveDesktopPlayer(dt);
-    moveVRPlayer(dt);           // <-- thumbstick
-
-    const before = rigEl.object3D.position.clone();
-    enforceVRWorldBoundsAndCollisions();
-
-    cameraEl.object3D.getWorldPosition(tmpPlayer);
-    const distance = rigEl.object3D.position.distanceTo(before);
-    const speed = distance / dt;
-    if (speed > 0.15) { movementPenalty = Math.min(1, movementPenalty + 2.5 * dt); playerWalkTime += dt * Math.min(speed * 8, 15); }
-    else movementPenalty = Math.max(0, movementPenalty - 0.6 * dt);
-
-    calculateCamouflage(tmpPlayer);
-    detectHandSlaps(dt);
-
-    let maxDetection = 0, anyChasing = false;
-    bots.forEach(bot => {
-      if (!bot.active) return;
-      updateBot(bot, tmpPlayer, dt);
-      maxDetection = Math.max(maxDetection, bot.detectionMeter);
-      if (bot.state === 'Perseguindo') anyChasing = true;
-    });
-
-    if (anyChasing) {
-      const activeBotsCount = bots.filter(b => b.active).length;
-      syncPowerups(activeBotsCount);
-    } else {
-      removeAllPowerups();
-    }
-
-    powerupEntities.forEach(el => {
-      if (el && el.object3D) el.object3D.rotation.y += dt * 3.5;
-    });
-
-    if (isBoostActive) {
-      boostTimer -= dt;
-      if (boostTimer <= 0) {
-        isBoostActive = false;
-        alertEl.textContent = '⚡ Efeito do raio acabou!';
-        alertEl.style.display = 'block';
-        setTimeout(() => { if (!isGameOver) alertEl.style.display = 'none'; }, 1200);
-      }
-    }
-
-    checkPowerupPickup(tmpPlayer);
-
-    handleEffects(maxDetection, anyChasing, dt);
-    updateHUD(maxDetection);
-    lastRigPos.copy(rigEl.object3D.position);
-  }
-
-  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
-  else init();
-})();
