@@ -4,13 +4,8 @@
   const BOT_SPAWN_INTERVAL = 30;
   const MAP_LIMIT = 21;
   const BOT_CONFIG = {
-    viewDistance: 16,
-    viewAngleDeg: 110,
-    detectionSpeed: 2.2,
-    detectionDecay: 0.35,
-    chaseThreshold: 0.55,
-    patrolSpeed: 2.5,
-    chaseSpeed: 4
+    viewDistance: 16, viewAngleDeg: 110, detectionSpeed: 2.2, detectionDecay: 0.35,
+    chaseThreshold: 0.55, patrolSpeed: 2.5, chaseSpeed: 4
   };
   const BOT_SPAWNS = [
     { x: -10, z: -15 }, { x: 10, z: 15 }, { x: -18, z: 10 },
@@ -32,22 +27,23 @@
   let lastRigPos = null;
   const keys = new Set();
   const bots = [];
-  const hidingSpots = [];
+
+  let hidingSpots = [];   // formas coloridas (para camuflagem)
+  let obstacles = [];     // formas + paredes (para colisão)
+  let selectedMap = 'arena';
+
   const tmpPlayer = new THREE.Vector3();
   const tmpSpot = new THREE.Vector3();
   const tmpDir = new THREE.Vector3();
 
   const DEFAULT_SKIN_COLOR = '#e2a780';
 
-  let isBoostActive = false;
-  let boostTimer = 0;
-  let powerupEntities = [];
+  let isBoostActive = false, boostTimer = 0, powerupEntities = [];
 
   const vrHudState = { time: '', slaps: -1, stuns: -1, scoreKey: '', hunters: -1 };
 
   // ============================================================
-  // game-loop — roda a simulação em desktop E em VR (WebXR).
-  // Só roda depois que o jogo começa (gameStarted === true).
+  // game-loop (roda em desktop E VR; pausado até começar)
   // ============================================================
   AFRAME.registerComponent('game-loop', {
     tick: function (time, delta) {
@@ -59,9 +55,6 @@
     }
   });
 
-  // ============================================================
-  // vr-click-handler — emite 'click' nos .clickable ao apertar trigger.
-  // ============================================================
   AFRAME.registerComponent('vr-click-handler', {
     init: function () {
       const self = this;
@@ -82,41 +75,26 @@
     }
   });
 
-  // ============================================================
-  // vr-thumbstick-movement — locomoção VR (sem HUD de debug)
-  // ============================================================
   AFRAME.registerComponent('vr-thumbstick-movement', {
-    schema: {
-      speed: { type: 'number', default: 3.5 },
-      deadzone: { type: 'number', default: 0.25 }
-    },
-
+    schema: { speed: { type: 'number', default: 3.5 }, deadzone: { type: 'number', default: 0.25 } },
     init: function () {
       this.stickL = { x: 0, y: 0 };
       this.stickR = { x: 0, y: 0 };
       this._bindControllers();
     },
-
     _bindControllers: function () {
       const self = this;
       ['left', 'right'].forEach(side => {
         const ctrl = document.querySelector('#' + side + '-controller');
         if (!ctrl) return;
         const stickKey = side === 'left' ? 'stickL' : 'stickR';
-
         ctrl.addEventListener('axismove', (evt) => {
           const a = evt.detail && evt.detail.axis;
           if (!a) return;
-          let x = (typeof a[2] === 'number') ? a[2] : 0;
-          let y = (typeof a[3] === 'number') ? a[3] : 0;
-          if (Math.abs(x) < 1e-3 && Math.abs(y) < 1e-3) {
-            x = (typeof a[0] === 'number') ? a[0] : 0;
-            y = (typeof a[1] === 'number') ? a[1] : 0;
-          }
-          self[stickKey].x = x;
-          self[stickKey].y = y;
+          let x = a[2] || 0, y = a[3] || 0;
+          if (Math.abs(x) < 1e-3 && Math.abs(y) < 1e-3) { x = a[0] || 0; y = a[1] || 0; }
+          self[stickKey].x = x; self[stickKey].y = y;
         });
-
         ctrl.addEventListener('thumbstickmoved', (evt) => {
           const d = evt.detail || {};
           if (typeof d.x === 'number') self[stickKey].x = d.x;
@@ -124,54 +102,36 @@
         });
       });
     },
-
     tick: function (time, delta) {
       if (!gameStarted) return;
       const sceneEl = this.el.sceneEl;
       if (!sceneEl || !sceneEl.is('vr-mode')) return;
-
       let stickX = 0, stickY = 0;
       if (Math.abs(this.stickL.x) > Math.abs(stickX)) stickX = this.stickL.x;
       if (Math.abs(this.stickR.x) > Math.abs(stickX)) stickX = this.stickR.x;
       if (Math.abs(this.stickL.y) > Math.abs(stickY)) stickY = this.stickL.y;
       if (Math.abs(this.stickR.y) > Math.abs(stickY)) stickY = this.stickR.y;
-
       const DZ = this.data.deadzone;
       if (Math.abs(stickX) < DZ) stickX = 0;
       if (Math.abs(stickY) < DZ) stickY = 0;
       if (!stickX && !stickY) return;
-
-      const camera = sceneEl.camera;
-      if (!camera) return;
-
+      const camera = sceneEl.camera; if (!camera) return;
       const dt = Math.min(delta / 1000, 0.05);
-
-      const camQuat = new THREE.Quaternion();
-      camera.getWorldQuaternion(camQuat);
-      const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(camQuat);
-      forward.y = 0;
-      if (forward.lengthSq() < 1e-6) {
-        forward.set(0, 0, -1).applyQuaternion(this.el.object3D.quaternion);
-        forward.y = 0;
-      }
-      forward.normalize();
-
-      const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
-
-      const moveDir = new THREE.Vector3()
-        .addScaledVector(forward, -stickY)
-        .addScaledVector(right,   stickX);
-
+      const q = new THREE.Quaternion(); camera.getWorldQuaternion(q);
+      const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(q); fwd.y = 0;
+      if (fwd.lengthSq() < 1e-6) { fwd.set(0, 0, -1).applyQuaternion(this.el.object3D.quaternion); fwd.y = 0; }
+      fwd.normalize();
+      const right = new THREE.Vector3().crossVectors(fwd, new THREE.Vector3(0, 1, 0)).normalize();
+      const moveDir = new THREE.Vector3().addScaledVector(fwd, -stickY).addScaledVector(right, stickX);
       if (moveDir.lengthSq() < 1e-6) return;
       moveDir.normalize();
-
       const speed = this.data.speed * (isBoostActive ? 1.8 : 1) * dt;
       this.el.object3D.position.addScaledVector(moveDir, speed);
     }
   });
 
   // ============================================================
-  // Construção das mãos
+  // MÃOS
   // ============================================================
   function buildDesktopHand(handEl, left) {
     if (!handEl || handEl.dataset.built === '1') return;
@@ -181,11 +141,8 @@
       Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
       parent.appendChild(el); return el;
     };
-
     const skin = DEFAULT_SKIN_COLOR, shadow = '#c28760';
-
     add('a-sphere', { class: 'hand-part', position: '0 0 0', radius: '0.11', scale: '1.1 0.7 0.5', color: skin, material: 'roughness: 0.6; metalness: 0.1' });
-
     for (let i = 0; i < 4; i++) {
       const x = (i - 1.5) * 0.044;
       const length = [0.09, 0.11, 0.10, 0.08][i];
@@ -194,19 +151,16 @@
       add('a-cylinder', { class: 'hand-part', position: `${x} ${0.06 + length + 0.03} -0.01`, radius: '0.014', height: '0.05', rotation: '-15 0 0', color: skin, material: 'roughness: 0.7' });
       add('a-sphere', { class: 'hand-part', position: `${x} ${0.06 + length + 0.055} -0.018`, radius: '0.014', color: skin });
     }
-
     const thumbX = left ? '0.08' : '-0.08';
     add('a-cylinder', { class: 'hand-part', position: `${thumbX} 0.01 0.02`, radius: '0.018', height: '0.08', rotation: `20 0 ${left ? '-45' : '45'}`, color: skin, material: 'roughness: 0.7' });
     add('a-sphere', { class: 'hand-part', position: `${left ? '0.12' : '-0.12'} 0.03 0.03`, radius: '0.018', color: skin });
-
     handEl.setAttribute('scale', '1 1 1');
   }
 
   function attachVRHandToController(controllerEl, left) {
     if (!controllerEl || controllerEl.querySelector('.vr-hand')) return;
     const handEl = document.createElement('a-entity');
-    handEl.classList.add('vr-hand');
-    handEl.classList.add('hand-part');
+    handEl.classList.add('vr-hand', 'hand-part');
     buildDesktopHand(handEl, left);
     handEl.setAttribute('scale', '1.1 1.1 1.1');
     handEl.setAttribute('rotation', '-90 0 0');
@@ -229,51 +183,127 @@
   }
 
   // ============================================================
-  // Mouse / Desktop
+  // MAPAS
   // ============================================================
-  function onMouseMove(e) {
-    const now = performance.now();
-    if (mouseLast.t) {
-      const dt = Math.max(0.008, (now - mouseLast.t) / 1000);
-      mouseSpeed = Math.hypot(e.clientX - mouseLast.x, e.clientY - mouseLast.y) / dt;
-      if (!scene.is('vr-mode') && mouseSpeed > 850) desktopThrust = 0.24;
-    }
-    mouseLast = { x: e.clientX, y: e.clientY, t: now };
-    if (!scene.is('vr-mode') && desktopRightHand && cameraEl) {
-      const x = Math.max(-0.58, Math.min(0.58, (e.clientX / window.innerWidth - 0.5) * 1.15));
-      const y = Math.max(-0.42, Math.min(0.28, (0.5 - e.clientY / window.innerHeight) * 0.75 - 0.18));
-      desktopRightHand.object3D.position.x = x;
-      desktopRightHand.object3D.position.y = y;
-    }
+  function buildMazeMap() {
+    const mazeEl = $('map-maze');
+    if (!mazeEl || mazeEl.dataset.built === '1') return;
+    mazeEl.dataset.built = '1';
+
+    const createBox = (x, z, w, h, d, color, isSpot) => {
+      const el = document.createElement('a-box');
+      if (isSpot) {
+        el.classList.add('hiding-spot');
+        el.setAttribute('data-sizex', w);
+        el.setAttribute('data-sizez', d);
+      } else {
+        el.classList.add('maze-wall');
+      }
+      el.setAttribute('position', `${x} ${h / 2} ${z}`);
+      el.setAttribute('width', w);
+      el.setAttribute('height', h);
+      el.setAttribute('depth', d);
+      el.setAttribute('color', color);
+      el.setAttribute('material', 'roughness: 0.85; metalness: 0.1');
+      mazeEl.appendChild(el);
+    };
+
+    // Paredes (cinza escuro, não dão camuflagem)
+    const walls = [
+      // Cruz central (com corredores amplos no meio)
+      { x: 0,   z: -8,  w: 1, d: 6 },
+      { x: 0,   z: 8,   w: 1, d: 6 },
+      { x: -8,  z: 0,   w: 6, d: 1 },
+      { x: 8,   z: 0,   w: 6, d: 1 },
+      // "L" nas diagonais (4 quadrantes)
+      { x: -12, z: -6,  w: 4, d: 1 },
+      { x: -12, z: -6,  w: 1, d: 4 },
+      { x: 12,  z: -6,  w: 4, d: 1 },
+      { x: 12,  z: -6,  w: 1, d: 4 },
+      { x: -12, z: 6,   w: 4, d: 1 },
+      { x: -12, z: 6,   w: 1, d: 4 },
+      { x: 12,  z: 6,   w: 4, d: 1 },
+      { x: 12,  z: 6,   w: 1, d: 4 },
+      // Paredes diagonais externas
+      { x: -6,  z: -12, w: 1, d: 4 },
+      { x: 6,   z: -12, w: 1, d: 4 },
+      { x: -6,  z: 12,  w: 1, d: 4 },
+      { x: 6,   z: 12,  w: 1, d: 4 },
+    ];
+    walls.forEach(w => createBox(w.x, w.z, w.w, 3, w.d, '#1a2e2e', false));
+
+    // Esconderijos coloridos (camuflagem)
+    const spots = [
+      { x: 0,   z: 0,   w: 2.5, d: 2.5, color: '#8a2be2' },
+      { x: -16, z: -16, w: 2.5, d: 2.5, color: '#ff3030' },
+      { x: 16,  z: -16, w: 2.5, d: 2.5, color: '#2878ff' },
+      { x: -16, z: 16,  w: 2.5, d: 2.5, color: '#00bb65' },
+      { x: 16,  z: 16,  w: 2.5, d: 2.5, color: '#e6d52a' },
+      { x: -19, z: 0,   w: 2.5, d: 2.5, color: '#cf42e8' },
+      { x: 19,  z: 0,   w: 2.5, d: 2.5, color: '#00cbd1' },
+      { x: 0,   z: -19, w: 2.5, d: 2.5, color: '#ff7f00' },
+      { x: 0,   z: 19,  w: 2.5, d: 2.5, color: '#ff69b4' },
+    ];
+    spots.forEach(s => createBox(s.x, s.z, s.w, 3, s.d, s.color, true));
   }
 
-  function updateDesktopHand(dt) {
-    if (!desktopRightHand || scene.is('vr-mode')) return;
-    desktopThrust = Math.max(0, desktopThrust - dt * 0.9);
-    const p = desktopRightHand.object3D.position;
-    p.z = -0.68 - desktopThrust * 2.1;
-    mouseSpeed = Math.max(0, mouseSpeed - dt * 1800);
+  /**
+   * Troca de mapa: esconde/mostra containers, reconstrói hidingSpots/obstacles.
+   * Não reposiciona o jogador — quem chama decide (startGame / restartGame).
+   */
+  function switchMap(mapName) {
+    selectedMap = mapName;
+
+    const arenaEl = $('map-arena');
+    const mazeEl = $('map-maze');
+    if (!arenaEl || !mazeEl) return;
+
+    if (mapName === 'maze') {
+      buildMazeMap();
+      arenaEl.setAttribute('visible', 'false');
+      mazeEl.setAttribute('visible', 'true');
+    } else {
+      arenaEl.setAttribute('visible', 'true');
+      mazeEl.setAttribute('visible', 'false');
+    }
+
+    const activeMap = (mapName === 'maze') ? mazeEl : arenaEl;
+
+    hidingSpots = [];
+    obstacles = [];
+
+    activeMap.querySelectorAll('.hiding-spot').forEach(el => {
+      hidingSpots.push(el);
+      obstacles.push(el);
+    });
+    activeMap.querySelectorAll('.maze-wall').forEach(el => {
+      obstacles.push(el);
+    });
+  }
+
+  function getMapSpawn(mapName) {
+    if (mapName === 'maze') return { x: 0, z: 18 };
+    return { x: 0, z: 10 };
   }
 
   // ============================================================
   // Detecção de tapas
   // ============================================================
   function getTrackedPalmPosition(handEl, out) {
-    const component = handEl.components && handEl.components['hand-tracking-controls'];
-    const joints = component && component.jointEls;
+    const comp = handEl.components && handEl.components['hand-tracking-controls'];
+    const joints = comp && comp.jointEls;
     if (!joints || !joints.length) { handEl.object3D.getWorldPosition(out); return out; }
     const ids = [0, 5, 10, 15, 20];
     out.set(0, 0, 0);
     let count = 0;
     ids.forEach(i => {
-      const joint = joints[i];
-      if (joint && joint.object3D && joint.object3D.visible) {
-        const p = new THREE.Vector3(); joint.object3D.getWorldPosition(p);
+      const j = joints[i];
+      if (j && j.object3D && j.object3D.visible) {
+        const p = new THREE.Vector3(); j.object3D.getWorldPosition(p);
         if (Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z)) { out.add(p); count++; }
       }
     });
-    if (count) out.multiplyScalar(1 / count);
-    else handEl.object3D.getWorldPosition(out);
+    if (count) out.multiplyScalar(1 / count); else handEl.object3D.getWorldPosition(out);
     return out;
   }
 
@@ -283,12 +313,9 @@
       const comp = src.el.components && src.el.components['hand-tracking-controls'];
       const joints = comp && comp.jointEls;
       if (!joints || !joints.length) return false;
-      let anyTracked = false;
-      for (let i = 0; i < joints.length; i++) {
-        const j = joints[i];
-        if (j && j.object3D && j.object3D.visible) { anyTracked = true; break; }
-      }
-      if (!anyTracked) return false;
+      let any = false;
+      for (let i = 0; i < joints.length; i++) if (joints[i] && joints[i].object3D && joints[i].object3D.visible) { any = true; break; }
+      if (!any) return false;
       getTrackedPalmPosition(src.el, out);
       return true;
     }
@@ -301,16 +328,12 @@
       out.add(fwd.multiplyScalar(0.10));
       return true;
     }
-    if (src.kind === 'desktop') {
-      src.el.object3D.getWorldPosition(out);
-      return true;
-    }
+    if (src.kind === 'desktop') { src.el.object3D.getWorldPosition(out); return true; }
     return false;
   }
 
   function detectHandSlaps(dt) {
     const inVR = scene.is('vr-mode');
-
     const sources = [];
     if (inVR) {
       sources.push({ id: 'left',  el: leftTrackedHand,   kind: 'hand' });
@@ -320,50 +343,34 @@
     } else {
       sources.push({ id: 'right', el: desktopRightHand,  kind: 'desktop' });
     }
-
     const usedSides = new Set();
-
     for (const src of sources) {
       if (!src.el || !src.el.object3D) continue;
       if (usedSides.has(src.id)) continue;
-
       const world = new THREE.Vector3();
       if (!getSourcePosition(src, world)) continue;
       usedSides.add(src.id);
-
       const prev = handSamples.get(src.id);
       let speed = 0;
-      if (prev && prev.kind === src.kind) {
-        speed = world.distanceTo(prev.pos) / Math.max(dt, 0.001);
-      }
+      if (prev && prev.kind === src.kind) speed = world.distanceTo(prev.pos) / Math.max(dt, 0.001);
       handSamples.set(src.id, { pos: world.clone(), kind: src.kind });
-
-      if (src.kind === 'desktop') {
-        speed = Math.max(speed, desktopThrust > 0.13 && mouseSpeed > 350 ? 2.8 : 0);
-      }
-
+      if (src.kind === 'desktop') speed = Math.max(speed, desktopThrust > 0.13 && mouseSpeed > 350 ? 2.8 : 0);
       const minSpeed = src.kind === 'desktop' ? 1.6 : 1.65;
       if (speed < minSpeed || slapCooldown[src.id] > 0) continue;
-
       let closest = null, closestDist = Infinity;
       for (const bot of bots) {
         if (!bot.active || bot.stunned > 0.15) continue;
         const target = new THREE.Vector3();
-        bot.el.object3D.getWorldPosition(target);
-        target.y += 1.45;
+        bot.el.object3D.getWorldPosition(target); target.y += 1.45;
         const d = world.distanceTo(target);
         if (d < closestDist) { closestDist = d; closest = bot; }
       }
-
       const maxRange = src.kind === 'hand' ? 1.1 : src.kind === 'controller' ? 1.4 : 1.35;
       if (!closest || closestDist >= maxRange) continue;
-
-      const botForward = new THREE.Vector3(0, 0, -1).applyQuaternion(closest.el.object3D.quaternion);
-      const botPos = new THREE.Vector3();
-      closest.el.object3D.getWorldPosition(botPos);
+      const botFwd = new THREE.Vector3(0, 0, -1).applyQuaternion(closest.el.object3D.quaternion);
+      const botPos = new THREE.Vector3(); closest.el.object3D.getWorldPosition(botPos);
       const handDir = world.clone().sub(botPos).normalize();
-      const dot = botForward.dot(handDir);
-
+      const dot = botFwd.dot(handDir);
       if (dot > 0.1) {
         alertEl.textContent = '😱 O ROBÔ TE VIU DANDO O TAPA DE FRENTE!';
         alertEl.style.display = 'block';
@@ -386,20 +393,15 @@
     alertTimeout = setTimeout(() => { if (!isGameOver) alertEl.style.display = 'none'; }, 1400);
     playBeep(180, 0.11); setTimeout(() => playBeep(420, 0.12), 80);
     const head = bot.el.querySelector('a-sphere');
-    if (head) {
-      head.setAttribute('color', '#ffcc00');
-      head.setAttribute('scale', '1.25 0.8 1.15');
-      setTimeout(() => { if (head.isConnected) { head.setAttribute('scale', '1 1 1'); } }, 350);
-    }
+    if (head) { head.setAttribute('color', '#ffcc00'); head.setAttribute('scale', '1.25 0.8 1.15'); setTimeout(() => { if (head.isConnected) head.setAttribute('scale', '1 1 1'); }, 350); }
     let stars = bot.el.querySelector('.dizzy-stars');
     if (!stars) {
       stars = document.createElement('a-entity'); stars.classList.add('dizzy-stars');
       for (let i = 0; i < 3; i++) {
-        const star = document.createElement('a-text');
-        star.setAttribute('value', '★'); star.setAttribute('color', '#ffff00'); star.setAttribute('align', 'center');
-        star.setAttribute('width', '2');
-        star.setAttribute('position', `${Math.cos(i * 2.1) * 0.42} 2.55 ${Math.sin(i * 2.1) * 0.25}`);
-        stars.appendChild(star);
+        const s = document.createElement('a-text');
+        s.setAttribute('value', '★'); s.setAttribute('color', '#ffff00'); s.setAttribute('align', 'center'); s.setAttribute('width', '2');
+        s.setAttribute('position', `${Math.cos(i * 2.1) * 0.42} 2.55 ${Math.sin(i * 2.1) * 0.25}`);
+        stars.appendChild(s);
       }
       bot.el.appendChild(stars);
     }
@@ -435,17 +437,16 @@
     };
   }
 
+  // ============================================================
+  // INIT
+  // ============================================================
   function init() {
     scene = $('game-scene'); cameraEl = $('camera'); rigEl = $('rig');
     gameOverModalEl = $('game-over-modal'); vrPanelEl = $('vr-game-over-panel'); alertEl = $('alert-overlay');
     startMenuEl = $('start-menu'); hud2dEl = $('hud');
     vrHudEl = $('vr-hud');
-    vrHudTimeEl = $('vr-hud-time');
-    vrHudSlapsEl = $('vr-hud-slaps');
-    vrHudStunsEl = $('vr-hud-stuns');
-    vrHudScoreEl = $('vr-hud-score');
-    vrHudHuntersEl = $('vr-hud-hunters');
-    vrHudDetBar = $('vr-hud-detection');
+    vrHudTimeEl = $('vr-hud-time'); vrHudSlapsEl = $('vr-hud-slaps'); vrHudStunsEl = $('vr-hud-stuns');
+    vrHudScoreEl = $('vr-hud-score'); vrHudHuntersEl = $('vr-hud-hunters'); vrHudDetBar = $('vr-hud-detection');
     timeEl = $('time-val'); scoreEl = $('score-val'); finalScoreEl = $('final-score');
     botCountEl = $('bot-count-val'); botStatesEl = $('bot-states-list'); detectionFillEl = $('detection-fill');
     slapEl = $('slap-val'); stunEl = $('stun-val');
@@ -455,56 +456,48 @@
 
     buildDesktopHand(desktopLeftHand, true);
     buildDesktopHand(desktopRightHand, false);
-
     attachVRHandToController(leftControllerEl, true);
     attachVRHandToController(rightControllerEl, false);
 
     if (!scene || !cameraEl || !rigEl) return;
-    document.querySelectorAll('.hiding-spot').forEach(el => hidingSpots.push(el));
+
     BOT_SPAWNS.forEach((_, i) => bots.push(createBot(i)));
     lastRigPos = rigEl.object3D.position.clone();
 
     rigEl.setAttribute('vr-thumbstick-movement', 'speed: 3.5; deadzone: 0.25');
     scene.setAttribute('game-loop', '');
 
-    // =========================
-    // Handlers do MENU INICIAL
-    // =========================
-    const btnVR = $('btn-start-vr');
+    // *** Popula mapas via switchMap ***
+    switchMap('arena');
+
+    // Handlers do seletor de mapa
+    document.querySelectorAll('.map-option').forEach(btn => {
+      btn.addEventListener('click', () => {
+        document.querySelectorAll('.map-option').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        selectedMap = btn.dataset.map;
+      });
+    });
+
+    // Handlers do menu principal
     const btnPC = $('btn-start-pc');
+    const btnVR = $('btn-start-vr');
 
-    if (btnPC) {
-      btnPC.addEventListener('click', () => {
-        unlockAudio();
-        startGame(false);
-      });
-    }
+    if (btnPC) btnPC.addEventListener('click', () => { unlockAudio(); startGame(false); });
 
-    if (btnVR) {
-      btnVR.addEventListener('click', () => {
-        unlockAudio();
-        // Solicita imersão XR (precisa ser chamado a partir de gesto do usuário)
-        const p = scene.enterVR ? scene.enterVR() : null;
-        const go = () => startGame(true);
-        if (p && typeof p.then === 'function') {
-          p.then(go).catch((err) => {
-            console.warn('[VR] Falha ao entrar em VR:', err);
-            alert('Não foi possível entrar no modo VR.\n\n' +
-                  'Verifique:\n• Headset conectado e navegador compatível (Chrome/Meta Quest Browser)\n' +
-                  '• Página servida em HTTPS ou localhost\n\n' +
-                  'O jogo vai iniciar em modo PC por enquanto.');
-            startGame(false);
-          });
-        } else {
-          // A-Frame antigo: promise não retornada — assume sucesso após um tick.
-          setTimeout(go, 200);
-        }
-      });
-    }
+    if (btnVR) btnVR.addEventListener('click', () => {
+      unlockAudio();
+      const p = scene.enterVR ? scene.enterVR() : null;
+      const go = () => startGame(true);
+      if (p && typeof p.then === 'function') {
+        p.then(go).catch((err) => {
+          console.warn('[VR] Falha:', err);
+          alert('Não foi possível entrar no modo VR.\n\nVerifique:\n• Headset conectado\n• Navegador compatível\n• Página em HTTPS ou localhost\n\nO jogo vai iniciar em modo PC.');
+          startGame(false);
+        });
+      } else { setTimeout(go, 200); }
+    });
 
-    // =========================
-    // Restart / quit
-    // =========================
     $('btn-restart-2d').addEventListener('click', restartGame);
     $('btn-quit-2d').addEventListener('click', quitGame);
     $('vr-btn-restart').addEventListener('click', restartGame);
@@ -516,13 +509,11 @@
     document.addEventListener('pointerdown', unlockAudio, { once: true });
     document.addEventListener('mousemove', onMouseMove, { passive: true });
 
-    // Detecta entrada em VR pelo botão do menu
     scene.addEventListener('enter-vr', () => {
       if (desktopHandsEl) desktopHandsEl.setAttribute('visible', 'false');
       if (vrHudEl && gameStarted) vrHudEl.setAttribute('visible', 'true');
       $('controls-hint').textContent = 'Quest: empurre o ANALÓGICO para andar · aproxime por TRÁS e dê um tapa.';
     });
-
     scene.addEventListener('exit-vr', () => {
       if (desktopHandsEl) desktopHandsEl.setAttribute('visible', 'true');
       if (leftTrackedHand) leftTrackedHand.setAttribute('visible', 'false');
@@ -532,29 +523,26 @@
     });
   }
 
-  /**
-   * Inicia o jogo a partir do menu.
-   * @param {boolean} vr - true se já estamos entrando em VR
-   */
   function startGame(vr) {
     if (gameStarted) return;
     gameStarted = true;
 
-    if (startMenuEl) startMenuEl.classList.add('hidden');
-    if (hud2dEl && !vr) hud2dEl.classList.add('visible');
+    // Reaplica o mapa selecionado e reposiciona o jogador
+    switchMap(selectedMap);
+    const spawn = getMapSpawn(selectedMap);
+    rigEl.object3D.position.set(spawn.x, 0, spawn.z);
+    rigEl.object3D.rotation.set(0, 0, 0);
+    lastRigPos.copy(rigEl.object3D.position);
 
+    if (startMenuEl) startMenuEl.classList.add('hidden');
     if (vr) {
       if (vrHudEl) vrHudEl.setAttribute('visible', 'true');
       if (desktopHandsEl) desktopHandsEl.setAttribute('visible', 'false');
       if (hud2dEl) hud2dEl.classList.remove('visible');
     } else {
+      if (hud2dEl) hud2dEl.classList.add('visible');
       $('controls-hint').textContent = 'PC: WASD/setas para mover · mouse para olhar.';
     }
-
-    // Reset visual do rig caso tenha sobrado algo da cena inicial
-    rigEl.object3D.position.set(0, 0, 10);
-    rigEl.object3D.rotation.set(0, 0, 0);
-    lastRigPos.copy(rigEl.object3D.position);
   }
 
   function onKeyDown(e) {
@@ -568,8 +556,8 @@
 
   function unlockAudio() {
     if (!audioCtx) {
-      const AudioCtor = window.AudioContext || window.webkitAudioContext;
-      if (AudioCtor) audioCtx = new AudioCtor();
+      const A = window.AudioContext || window.webkitAudioContext;
+      if (A) audioCtx = new A();
     }
     if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
   }
@@ -583,59 +571,67 @@
     const moveX = (-Math.sin(yaw) * forward + Math.cos(yaw) * side);
     const moveZ = (-Math.cos(yaw) * forward - Math.sin(yaw) * side);
     const len = Math.hypot(moveX, moveZ) || 1;
-
     const baseSpeed = (keys.has('shift') ? 6 : 4.2);
     const speed = (isBoostActive ? baseSpeed * 1.8 : baseSpeed) * dt;
-
     rigEl.object3D.position.x += moveX / len * speed;
     rigEl.object3D.position.z += moveZ / len * speed;
   }
 
   // ============================================================
-  // Powerups
+  // MOUSE/DESKTOP
   // ============================================================
-  function createRayElement() {
-    const rayContainer = document.createElement('a-entity');
-    rayContainer.classList.add('powerup-ray-item');
-    rayContainer.innerHTML = `
-      <a-cone position="0.08 0.4 0" rotation="0 0 -25" radius-bottom="0.02" radius-top="0.12" height="0.45" color="#ffee00" material="emissive: #ffff00; emissiveIntensity: 0.9"></a-cone>
-      <a-box position="0 0.15 0" rotation="0 0 45" width="0.25" height="0.1" depth="0.1" color="#ffff00" material="emissive: #ffff00; emissiveIntensity: 1"></a-box>
-      <a-cone position="-0.08 -0.15 0" rotation="0 0 -25" radius-bottom="0.13" radius-top="0.01" height="0.45" color="#ffee00" material="emissive: #ffff00; emissiveIntensity: 0.9"></a-cone>
-      <a-light type="point" color="#ffff00" intensity="1.2" distance="4"></a-light>
-    `;
-    const rx = (Math.random() * 2 - 1) * MAP_LIMIT;
-    const rz = (Math.random() * 2 - 1) * MAP_LIMIT;
-    rayContainer.setAttribute('position', `${rx} 1.1 ${rz}`);
-    scene.appendChild(rayContainer);
-    return rayContainer;
-  }
-
-  function syncPowerups(targetCount) {
-    while (powerupEntities.length < targetCount) {
-      powerupEntities.push(createRayElement());
+  function onMouseMove(e) {
+    const now = performance.now();
+    if (mouseLast.t) {
+      const dt = Math.max(0.008, (now - mouseLast.t) / 1000);
+      mouseSpeed = Math.hypot(e.clientX - mouseLast.x, e.clientY - mouseLast.y) / dt;
+      if (!scene.is('vr-mode') && mouseSpeed > 850) desktopThrust = 0.24;
+    }
+    mouseLast = { x: e.clientX, y: e.clientY, t: now };
+    if (!scene.is('vr-mode') && desktopRightHand && cameraEl) {
+      const x = Math.max(-0.58, Math.min(0.58, (e.clientX / window.innerWidth - 0.5) * 1.15));
+      const y = Math.max(-0.42, Math.min(0.28, (0.5 - e.clientY / window.innerHeight) * 0.75 - 0.18));
+      desktopRightHand.object3D.position.x = x;
+      desktopRightHand.object3D.position.y = y;
     }
   }
 
-  function removeAllPowerups() {
-    powerupEntities.forEach(el => {
-      if (el && el.parentNode) el.parentNode.removeChild(el);
-    });
-    powerupEntities = [];
+  function updateDesktopHand(dt) {
+    if (!desktopRightHand || scene.is('vr-mode')) return;
+    desktopThrust = Math.max(0, desktopThrust - dt * 0.9);
+    const p = desktopRightHand.object3D.position;
+    p.z = -0.68 - desktopThrust * 2.1;
+    mouseSpeed = Math.max(0, mouseSpeed - dt * 1800);
   }
 
-  function checkPowerupPickup(playerPos) {
+  // ============================================================
+  // POWERUPS
+  // ============================================================
+  function createRayElement() {
+    const el = document.createElement('a-entity');
+    el.classList.add('powerup-ray-item');
+    el.innerHTML = `
+      <a-cone position="0.08 0.4 0" rotation="0 0 -25" radius-bottom="0.02" radius-top="0.12" height="0.45" color="#ffee00" material="emissive: #ffff00; emissiveIntensity: 0.9"></a-cone>
+      <a-box position="0 0.15 0" rotation="0 0 45" width="0.25" height="0.1" depth="0.1" color="#ffff00" material="emissive: #ffff00; emissiveIntensity: 1"></a-box>
+      <a-cone position="-0.08 -0.15 0" rotation="0 0 -25" radius-bottom="0.13" radius-top="0.01" height="0.45" color="#ffee00" material="emissive: #ffff00; emissiveIntensity: 0.9"></a-cone>
+      <a-light type="point" color="#ffff00" intensity="1.2" distance="4"></a-light>`;
+    const rx = (Math.random() * 2 - 1) * MAP_LIMIT;
+    const rz = (Math.random() * 2 - 1) * MAP_LIMIT;
+    el.setAttribute('position', `${rx} 1.1 ${rz}`);
+    scene.appendChild(el);
+    return el;
+  }
+  function syncPowerups(n) { while (powerupEntities.length < n) powerupEntities.push(createRayElement()); }
+  function removeAllPowerups() { powerupEntities.forEach(el => el.parentNode && el.parentNode.removeChild(el)); powerupEntities = []; }
+  function checkPowerupPickup(pos) {
     for (let i = powerupEntities.length - 1; i >= 0; i--) {
       const el = powerupEntities[i];
       if (!el || !el.object3D) continue;
       const p = el.object3D.position;
-      const dist = Math.hypot(playerPos.x - p.x, playerPos.z - p.z);
-
-      if (dist < 1.4) {
-        if (el.parentNode) el.parentNode.removeChild(el);
+      if (Math.hypot(pos.x - p.x, pos.z - p.z) < 1.4) {
+        el.parentNode && el.parentNode.removeChild(el);
         powerupEntities.splice(i, 1);
-
-        isBoostActive = true;
-        boostTimer = 5.0;
+        isBoostActive = true; boostTimer = 5.0;
         playBeep(1200, 0.25);
         alertEl.textContent = '⚡ RAIO PEGO! SUPER VELOCIDADE ATIVADA! 🚀';
         alertEl.style.display = 'block';
@@ -645,35 +641,26 @@
   }
 
   // ============================================================
-  // Colisões / limites
+  // COLISÕES (usa `obstacles` = formas + paredes)
   // ============================================================
   function enforceVRWorldBoundsAndCollisions() {
     const camPos = cameraEl.object3D.position;
     const rigPos = rigEl.object3D.position;
+    const wx = rigPos.x + camPos.x, wz = rigPos.z + camPos.z;
+    const cx = Math.max(-MAP_LIMIT, Math.min(MAP_LIMIT, wx));
+    const cz = Math.max(-MAP_LIMIT, Math.min(MAP_LIMIT, wz));
+    rigPos.x += (cx - wx); rigPos.z += (cz - wz);
 
-    const playerWorldX = rigPos.x + camPos.x;
-    const playerWorldZ = rigPos.z + camPos.z;
-
-    const clampedX = Math.max(-MAP_LIMIT, Math.min(MAP_LIMIT, playerWorldX));
-    const clampedZ = Math.max(-MAP_LIMIT, Math.min(MAP_LIMIT, playerWorldZ));
-
-    rigPos.x += (clampedX - playerWorldX);
-    rigPos.z += (clampedZ - playerWorldZ);
-
-    for (const spot of hidingSpots) {
+    for (const spot of obstacles) {
+      if (!spot.object3D) continue;
       spot.object3D.getWorldPosition(tmpSpot);
       const sx = parseFloat(spot.dataset.sizex || spot.dataset.size) || 2;
       const sz = parseFloat(spot.dataset.sizez || spot.dataset.size) || 2;
       const hx = sx / 2 + 0.45, hz = sz / 2 + 0.45;
-
-      const currentWorldX = rigPos.x + camPos.x;
-      const currentWorldZ = rigPos.z + camPos.z;
-      const dx = currentWorldX - tmpSpot.x;
-      const dz = currentWorldZ - tmpSpot.z;
-
+      const dx = (rigPos.x + camPos.x) - tmpSpot.x;
+      const dz = (rigPos.z + camPos.z) - tmpSpot.z;
       if (Math.abs(dx) < hx && Math.abs(dz) < hz) {
-        const ox = hx - Math.abs(dx);
-        const oz = hz - Math.abs(dz);
+        const ox = hx - Math.abs(dx), oz = hz - Math.abs(dz);
         if (ox < oz) rigPos.x += (dx >= 0 ? ox : -ox);
         else rigPos.z += (dz >= 0 ? oz : -oz);
       }
@@ -696,24 +683,15 @@
   }
 
   function calculateCamouflage(playerPos) {
-    let minDist = Infinity;
-    let closestColor = DEFAULT_SKIN_COLOR;
-
+    let minDist = Infinity, closestColor = DEFAULT_SKIN_COLOR;
     hidingSpots.forEach(spot => {
       spot.object3D.getWorldPosition(tmpSpot);
       const d = Math.hypot(playerPos.x - tmpSpot.x, playerPos.z - tmpSpot.z);
       if (d < minDist) { minDist = d; closestColor = spot.getAttribute('color') || DEFAULT_SKIN_COLOR; }
     });
-
     camoQuality = minDist < 4 ? 1 - minDist / 4 : 0;
     const activeColor = camoQuality > 0.1 ? closestColor : DEFAULT_SKIN_COLOR;
-
-    if (desktopHandsEl) {
-      document.querySelectorAll('.hand-part').forEach(part => {
-        part.setAttribute('color', activeColor);
-      });
-    }
-
+    if (desktopHandsEl) document.querySelectorAll('.hand-part').forEach(p => p.setAttribute('color', activeColor));
     if (leftTrackedHand && leftTrackedHand._lastColor !== activeColor) {
       leftTrackedHand._lastColor = activeColor;
       leftTrackedHand.setAttribute('hand-tracking-controls', `hand: left; modelStyle: mesh; modelColor: ${activeColor}`);
@@ -728,14 +706,18 @@
     const p = bot.el.object3D.position; p.y = 0;
     const dx = playerPos.x - p.x, dz = playerPos.z - p.z;
     const dist = Math.hypot(dx, dz);
-    const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(bot.el.object3D.quaternion);
+    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(bot.el.object3D.quaternion);
     tmpDir.set(dx, 0, dz).normalize();
-    const angle = dist > 0.001 ? forward.angleTo(tmpDir) * 180 / Math.PI : 0;
+    const angle = dist > 0.001 ? fwd.angleTo(tmpDir) * 180 / Math.PI : 0;
     let sees = false;
     if (dist <= BOT_CONFIG.viewDistance && angle <= BOT_CONFIG.viewAngleDeg / 2) {
-      const distanceFactor = 1 - dist / BOT_CONFIG.viewDistance;
-      const visibility = Math.max(0, Math.min(1, distanceFactor * 0.3 + movementPenalty * 0.5 - camoQuality * 0.4));
-      if (visibility > 0.1) { sees = true; bot.detectionMeter = Math.min(1, bot.detectionMeter + visibility * dt * BOT_CONFIG.detectionSpeed); bot.lastKnownPos = { x: playerPos.x, z: playerPos.z }; }
+      const dFactor = 1 - dist / BOT_CONFIG.viewDistance;
+      const visibility = Math.max(0, Math.min(1, dFactor * 0.3 + movementPenalty * 0.5 - camoQuality * 0.4));
+      if (visibility > 0.1) {
+        sees = true;
+        bot.detectionMeter = Math.min(1, bot.detectionMeter + visibility * dt * BOT_CONFIG.detectionSpeed);
+        bot.lastKnownPos = { x: playerPos.x, z: playerPos.z };
+      }
     }
     if (!sees) bot.detectionMeter = Math.max(0, bot.detectionMeter - BOT_CONFIG.detectionDecay * dt);
     if (bot.stunned <= 0 && dist <= 1.55 && bot.detectionMeter >= BOT_CONFIG.chaseThreshold) { triggerGameOver(); return; }
@@ -771,7 +753,8 @@
       }
     }
     resolveBotObstacles(bot);
-    p.x = Math.max(-MAP_LIMIT, Math.min(MAP_LIMIT, p.x)); p.z = Math.max(-MAP_LIMIT, Math.min(MAP_LIMIT, p.z));
+    p.x = Math.max(-MAP_LIMIT, Math.min(MAP_LIMIT, p.x));
+    p.z = Math.max(-MAP_LIMIT, Math.min(MAP_LIMIT, p.z));
     if (moving) bot.walkTime += dt * (bot.state === 'Perseguindo' ? 12 : 8);
     animateBot(bot, moving);
     const color = bot.state === 'Perseguindo' ? '#ff00ff' : bot.state === 'Procurando' ? '#ffff00' : '#00ff00';
@@ -779,13 +762,15 @@
   }
 
   function moveBot(bot, target, step) {
-    const p = bot.el.object3D.position, dx = target.x - p.x, dz = target.z - p.z, d = Math.hypot(dx, dz);
+    const p = bot.el.object3D.position;
+    const dx = target.x - p.x, dz = target.z - p.z, d = Math.hypot(dx, dz);
     if (d > 0.05) { p.x += dx / d * step; p.z += dz / d * step; bot.el.object3D.rotation.y = Math.atan2(-dx, -dz); }
   }
 
   function resolveBotObstacles(bot) {
     const p = bot.el.object3D.position;
-    for (const spot of hidingSpots) {
+    for (const spot of obstacles) {
+      if (!spot.object3D) continue;
       spot.object3D.getWorldPosition(tmpSpot);
       const sx = parseFloat(spot.dataset.sizex || spot.dataset.size) || 2;
       const sz = parseFloat(spot.dataset.sizez || spot.dataset.size) || 2;
@@ -809,7 +794,7 @@
   }
 
   // ============================================================
-  // HUD — 2D + VR
+  // HUD
   // ============================================================
   function updateHUD(maxDetection) {
     const active = bots.filter(b => b.active).length;
@@ -826,37 +811,20 @@
       detectionFillEl.style.width = `${Math.round(maxDetection * 100)}%`;
       detectionFillEl.style.backgroundColor = `rgb(${Math.floor(maxDetection * 255)},${Math.floor((1 - maxDetection) * 255)},0)`;
     }
-
     if (scene.is('vr-mode')) updateVRHUD(maxDetection);
   }
 
   function updateVRHUD(maxDetection) {
     const t = survivalTime.toFixed(1);
-    if (vrHudTimeEl && vrHudState.time !== t) {
-      vrHudState.time = t;
-      vrHudTimeEl.setAttribute('value', `Tempo: ${t}s`);
-    }
-    if (vrHudSlapsEl && vrHudState.slaps !== slapCount) {
-      vrHudState.slaps = slapCount;
-      vrHudSlapsEl.setAttribute('value', `Tapas: ${slapCount}`);
-    }
+    if (vrHudTimeEl && vrHudState.time !== t) { vrHudState.time = t; vrHudTimeEl.setAttribute('value', `Tempo: ${t}s`); }
+    if (vrHudSlapsEl && vrHudState.slaps !== slapCount) { vrHudState.slaps = slapCount; vrHudSlapsEl.setAttribute('value', `Tapas: ${slapCount}`); }
     const stuns = bots.filter(b => b.active && b.stunned > 0).length;
-    if (vrHudStunsEl && vrHudState.stuns !== stuns) {
-      vrHudState.stuns = stuns;
-      vrHudStunsEl.setAttribute('value', `Tonteados: ${stuns}`);
-    }
+    if (vrHudStunsEl && vrHudState.stuns !== stuns) { vrHudState.stuns = stuns; vrHudStunsEl.setAttribute('value', `Tonteados: ${stuns}`); }
     const boostStr = isBoostActive ? ` ⚡${boostTimer.toFixed(1)}s` : '';
     const scoreKey = `${score}|${boostStr}`;
-    if (vrHudScoreEl && vrHudState.scoreKey !== scoreKey) {
-      vrHudState.scoreKey = scoreKey;
-      vrHudScoreEl.setAttribute('value', `Pts: ${score}${boostStr}`);
-    }
+    if (vrHudScoreEl && vrHudState.scoreKey !== scoreKey) { vrHudState.scoreKey = scoreKey; vrHudScoreEl.setAttribute('value', `Pts: ${score}${boostStr}`); }
     const hunters = bots.filter(b => b.active).length;
-    if (vrHudHuntersEl && vrHudState.hunters !== hunters) {
-      vrHudState.hunters = hunters;
-      vrHudHuntersEl.setAttribute('value', `Caçadores: ${hunters}/5`);
-    }
-
+    if (vrHudHuntersEl && vrHudState.hunters !== hunters) { vrHudState.hunters = hunters; vrHudHuntersEl.setAttribute('value', `Caçadores: ${hunters}/5`); }
     if (vrHudDetBar && vrHudDetBar.object3D) {
       const det = Math.max(0, Math.min(1, maxDetection));
       if (vrHudDetBar.object3D.scale) vrHudDetBar.object3D.scale.x = Math.max(0.0001, det);
@@ -867,37 +835,29 @@
   }
 
   function resetVRHudState() {
-    vrHudState.time = '';
-    vrHudState.slaps = -1;
-    vrHudState.stuns = -1;
-    vrHudState.scoreKey = '';
-    vrHudState.hunters = -1;
+    vrHudState.time = ''; vrHudState.slaps = -1; vrHudState.stuns = -1; vrHudState.scoreKey = ''; vrHudState.hunters = -1;
     if (vrHudDetBar && vrHudDetBar.object3D) {
       if (vrHudDetBar.object3D.scale) vrHudDetBar.object3D.scale.x = 0.0001;
       if (vrHudDetBar.object3D.position) vrHudDetBar.object3D.position.x = -0.4;
-      const mat = vrHudDetBar.object3D.material;
-      if (mat && mat.color) mat.color.setRGB(0, 1, 0);
+      const m = vrHudDetBar.object3D.material; if (m && m.color) m.color.setRGB(0, 1, 0);
     }
   }
 
   // ============================================================
-  // Game over / restart / quit
+  // GAME OVER / RESTART / QUIT
   // ============================================================
   function triggerGameOver() {
     if (isGameOver) return;
     isGameOver = true;
     if (finalScoreEl) finalScoreEl.textContent = String(score);
-    const vrFinalScore = $('vr-final-score');
-    if (vrFinalScore) vrFinalScore.setAttribute('value', `Pontuação: ${score}`);
+    const vrFS = $('vr-final-score'); if (vrFS) vrFS.setAttribute('value', `Pontuação: ${score}`);
     if (gameOverModalEl) gameOverModalEl.style.display = 'block';
     if (alertEl) alertEl.style.display = 'none';
-
     if (scene.is('vr-mode')) {
       const camPos = new THREE.Vector3(); cameraEl.object3D.getWorldPosition(camPos);
       const camQ = cameraEl.object3D.getWorldQuaternion(new THREE.Quaternion());
-      const camForward = new THREE.Vector3(0, 0, -1).applyQuaternion(camQ).normalize();
-      const panelPos = camPos.clone().add(camForward.multiplyScalar(2.5));
-      vrPanelEl.object3D.position.copy(panelPos);
+      const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(camQ).normalize();
+      vrPanelEl.object3D.position.copy(camPos.clone().add(fwd.multiplyScalar(2.5)));
       vrPanelEl.object3D.lookAt(camPos);
       vrPanelEl.setAttribute('visible', 'true');
       if (vrHudEl) vrHudEl.setAttribute('visible', 'false');
@@ -910,19 +870,22 @@
     isGameOver = false; survivalTime = 0; score = 0; slapCount = 0; movementPenalty = 0; camoQuality = 0; playerWalkTime = 0; soundTimer = 0; desktopThrust = 0; mouseSpeed = 0; slapCooldown = { left: 0, right: 0 }; handSamples.clear();
     isBoostActive = false; boostTimer = 0; removeAllPowerups();
     keys.clear();
-    rigEl.object3D.position.set(0, 0, 10);
+
+    // Reposiciona no mapa ativo
+    const spawn = getMapSpawn(selectedMap);
+    rigEl.object3D.position.set(spawn.x, 0, spawn.z);
     rigEl.object3D.rotation.set(0, 0, 0);
     cameraEl.object3D.position.set(0, 1.6, 0);
     cameraEl.object3D.rotation.set(0, 0, 0);
     cameraEl.setAttribute('rotation', '0 0 0');
+
     bots.forEach((bot, i) => {
       bot.detectionMeter = 0; bot.currentPatrolTarget = randomWaypoint(); bot.waitTime = 0; bot.walkTime = 0; bot.stunned = 0; bot.dizzyTime = 0; bot.slapCount = 0;
       bot.lastKnownPos = { x: 0, z: 0 }; bot.el.object3D.position.set(bot.spawnPos.x, 0, bot.spawnPos.z);
       bot.el.object3D.rotation.set(0, 0, 0);
-      const stars = bot.el.querySelector('.dizzy-stars');
-      if (stars) stars.setAttribute('visible', 'false');
-      ['.bot-body', '.bot-visor', '.bot-antenna-light'].forEach(sel => { const part = bot.el.querySelector(sel); if (part) part.setAttribute('color', '#00ff00'); });
-      ['.bot-arm-r', '.bot-arm-l', '.bot-leg-r', '.bot-leg-l'].forEach(sel => { const part = bot.el.querySelector(sel); if (part) part.setAttribute('rotation', '0 0 0'); });
+      const stars = bot.el.querySelector('.dizzy-stars'); if (stars) stars.setAttribute('visible', 'false');
+      ['.bot-body', '.bot-visor', '.bot-antenna-light'].forEach(sel => { const p = bot.el.querySelector(sel); if (p) p.setAttribute('color', '#00ff00'); });
+      ['.bot-arm-r', '.bot-arm-l', '.bot-leg-r', '.bot-leg-l'].forEach(sel => { const p = bot.el.querySelector(sel); if (p) p.setAttribute('rotation', '0 0 0'); });
       bot.active = i === 0; bot.state = i === 0 ? 'Patrulhando' : 'Inativo';
       bot.el.setAttribute('visible', i === 0 ? 'true' : 'false');
     });
@@ -947,12 +910,12 @@
   function playBeep(freq = 880, duration = 0.08) {
     if (!audioCtx) return;
     try {
-      const osc = audioCtx.createOscillator(), gain = audioCtx.createGain();
-      osc.type = 'square'; osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
-      gain.gain.setValueAtTime(0.08, audioCtx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
-      osc.connect(gain); gain.connect(audioCtx.destination); osc.start(); osc.stop(audioCtx.currentTime + duration);
-    } catch (_) { }
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.type = 'square'; o.frequency.setValueAtTime(freq, audioCtx.currentTime);
+      g.gain.setValueAtTime(0.08, audioCtx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + duration);
+      o.connect(g); g.connect(audioCtx.destination); o.start(); o.stop(audioCtx.currentTime + duration);
+    } catch (_) {}
   }
 
   function handleEffects(detection, chasing, dt) {
@@ -962,6 +925,9 @@
     if (soundTimer >= interval) { soundTimer = 0; playBeep(chasing ? 1100 : 600, 0.07); }
   }
 
+  // ============================================================
+  // LOOP
+  // ============================================================
   function updateGame(dt) {
     survivalTime += dt;
     score = Math.floor(survivalTime * 10) + slapCount * 100;
@@ -977,9 +943,9 @@
     enforceVRWorldBoundsAndCollisions();
 
     cameraEl.object3D.getWorldPosition(tmpPlayer);
-    const distance = rigEl.object3D.position.distanceTo(before);
-    const speed = distance / dt;
-    if (speed > 0.15) { movementPenalty = Math.min(1, movementPenalty + 2.5 * dt); playerWalkTime += dt * Math.min(speed * 8, 15); }
+    const dist = rigEl.object3D.position.distanceTo(before);
+    const spd = dist / dt;
+    if (spd > 0.15) { movementPenalty = Math.min(1, movementPenalty + 2.5 * dt); playerWalkTime += dt * Math.min(spd * 8, 15); }
     else movementPenalty = Math.max(0, movementPenalty - 0.6 * dt);
 
     calculateCamouflage(tmpPlayer);
@@ -993,16 +959,10 @@
       if (bot.state === 'Perseguindo') anyChasing = true;
     });
 
-    if (anyChasing) {
-      const activeBotsCount = bots.filter(b => b.active).length;
-      syncPowerups(activeBotsCount);
-    } else {
-      removeAllPowerups();
-    }
+    if (anyChasing) syncPowerups(bots.filter(b => b.active).length);
+    else removeAllPowerups();
 
-    powerupEntities.forEach(el => {
-      if (el && el.object3D) el.object3D.rotation.y += dt * 3.5;
-    });
+    powerupEntities.forEach(el => { if (el && el.object3D) el.object3D.rotation.y += dt * 3.5; });
 
     if (isBoostActive) {
       boostTimer -= dt;
