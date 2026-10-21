@@ -42,7 +42,6 @@
   let boostTimer = 0;
   let powerupEntities = [];
 
-  // Cache de estado da HUD VR para evitar atualizações redundantes.
   const vrHudState = { time: '', slaps: -1, stuns: -1, scoreKey: '', hunters: -1 };
 
   // ============================================================
@@ -81,7 +80,7 @@
   });
 
   // ============================================================
-  // vr-thumbstick-movement — locomoção VR
+  // vr-thumbstick-movement — locomoção VR (sem HUD de debug)
   // ============================================================
   AFRAME.registerComponent('vr-thumbstick-movement', {
     schema: {
@@ -92,13 +91,7 @@
     init: function () {
       this.stickL = { x: 0, y: 0 };
       this.stickR = { x: 0, y: 0 };
-      this.rawL = [0, 0, 0, 0];
-      this.rawR = [0, 0, 0, 0];
-      this.debugEl = null;
-      this.debugText = null;
-      this.debugTimer = null;
       this._bindControllers();
-      this._createDebugHud();
     },
 
     _bindControllers: function () {
@@ -107,65 +100,27 @@
         const ctrl = document.querySelector('#' + side + '-controller');
         if (!ctrl) return;
         const stickKey = side === 'left' ? 'stickL' : 'stickR';
-        const rawKey = side === 'left' ? 'rawL' : 'rawR';
 
         ctrl.addEventListener('axismove', (evt) => {
           const a = evt.detail && evt.detail.axis;
           if (!a) return;
-          for (let i = 0; i < 4; i++) self[rawKey][i] = (typeof a[i] === 'number') ? a[i] : 0;
-          let x = self[rawKey][2];
-          let y = self[rawKey][3];
+          let x = (typeof a[2] === 'number') ? a[2] : 0;
+          let y = (typeof a[3] === 'number') ? a[3] : 0;
+          // Fallback: se o thumbstick estiver mapeado em 0/1
           if (Math.abs(x) < 1e-3 && Math.abs(y) < 1e-3) {
-            if (Math.abs(self[rawKey][0]) > 1e-3 || Math.abs(self[rawKey][1]) > 1e-3) {
-              x = self[rawKey][0];
-              y = self[rawKey][1];
-            }
+            x = (typeof a[0] === 'number') ? a[0] : 0;
+            y = (typeof a[1] === 'number') ? a[1] : 0;
           }
           self[stickKey].x = x;
           self[stickKey].y = y;
-          self._refreshDebugHud();
         });
 
         ctrl.addEventListener('thumbstickmoved', (evt) => {
           const d = evt.detail || {};
           if (typeof d.x === 'number') self[stickKey].x = d.x;
           if (typeof d.y === 'number') self[stickKey].y = d.y;
-          self._refreshDebugHud();
         });
       });
-    },
-
-    _createDebugHud: function () {
-      const self = this;
-      setTimeout(() => {
-        const cam = document.querySelector('#camera');
-        if (!cam) return;
-        const el = document.createElement('a-entity');
-        el.innerHTML = `
-          <a-plane width="0.9" height="0.18" color="#000" opacity="0.7"></a-plane>
-          <a-text value="Stick: ---" align="center" width="1.2" color="#00ffcc"
-                  position="0 0 0.01"></a-text>
-        `;
-        el.setAttribute('position', '0 -0.55 -1');
-        el.setAttribute('visible', 'false');
-        cam.appendChild(el);
-        self.debugEl = el;
-        self.debugText = el.querySelector('a-text');
-      }, 600);
-    },
-
-    _refreshDebugHud: function () {
-      if (!this.debugEl || !this.debugText) return;
-      const L = this.stickL, R = this.stickR;
-      const val =
-        `L:${L.x.toFixed(2)},${L.y.toFixed(2)}  R:${R.x.toFixed(2)},${R.y.toFixed(2)}\n` +
-        `rawL:${this.rawL.map(v => v.toFixed(1)).join(',')}  rawR:${this.rawR.map(v => v.toFixed(1)).join(',')}`;
-      this.debugText.setAttribute('value', val);
-      this.debugEl.setAttribute('visible', 'true');
-      if (this.debugTimer) clearTimeout(this.debugTimer);
-      this.debugTimer = setTimeout(() => {
-        if (this.debugEl) this.debugEl.setAttribute('visible', 'false');
-      }, 2500);
     },
 
     tick: function (time, delta) {
@@ -834,7 +789,6 @@
       vrHudHuntersEl.setAttribute('value', `Caçadores: ${hunters}/5`);
     }
 
-    // Barra de perseguição — atualiza rápido via scale/material
     if (vrHudDetBar && vrHudDetBar.object3D) {
       const det = Math.max(0, Math.min(1, maxDetection));
       if (vrHudDetBar.object3D.scale) vrHudDetBar.object3D.scale.x = Math.max(0.0001, det);
@@ -870,7 +824,6 @@
     if (gameOverModalEl) gameOverModalEl.style.display = 'block';
     if (alertEl) alertEl.style.display = 'none';
 
-    // Painel VR só em VR; HUD VR também escondida.
     if (scene.is('vr-mode')) {
       const camPos = new THREE.Vector3(); cameraEl.object3D.getWorldPosition(camPos);
       const camQ = cameraEl.object3D.getWorldQuaternion(new THREE.Quaternion());
@@ -941,9 +894,6 @@
     if (soundTimer >= interval) { soundTimer = 0; playBeep(chasing ? 1100 : 600, 0.07); }
   }
 
-  // ============================================================
-  // updateGame — chamado por game-loop.tick (desktop e VR)
-  // ============================================================
   function updateGame(dt) {
     survivalTime += dt;
     score = Math.floor(survivalTime * 10) + slapCount * 100;
