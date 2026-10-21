@@ -21,8 +21,14 @@
   let timeEl, scoreEl, finalScoreEl, botCountEl, botStatesEl, detectionFillEl, slapEl, stunEl;
   let slapCount = 0, mouseSpeed = 0, mouseLast = { x: 0, y: 0, t: 0 }, desktopThrust = 0;
   let desktopRightHand, desktopLeftHand, desktopHandsEl, leftTrackedHand, rightTrackedHand;
+  let leftController, rightController;
   const handSamples = new Map();
-  let slapCooldown = { left: 0, right: 0 };
+  // Cooldown por ORIGEM do tapa (desktop, mão rastreada esquerda/direita, controle esquerdo/direito)
+  let slapCooldown = {
+    left: 0, right: 0,
+    'left-hand': 0, 'right-hand': 0,
+    'left-ctrl': 0, 'right-ctrl': 0
+  };
   let survivalTime = 0, score = 0, isGameOver = false;
   let movementPenalty = 0, camoQuality = 0, soundTimer = 0;
   let playerWalkTime = 0, alertTimeout = null, audioCtx = null;
@@ -114,27 +120,59 @@
     return out;
   }
 
+  // Verifica se o componente hand-tracking-controls tem juntas rastreadas reais.
+  // Evita incluir mãos "fantasma" quando o usuário está usando apenas os controles.
+  function isHandTrackingActive(handEl) {
+    if (!handEl) return false;
+    const c = handEl.components && handEl.components['hand-tracking-controls'];
+    return !!(c && c.jointEls && c.jointEls.length > 0);
+  }
+
+  // ------------------------------------------------------------------
+  // DETECÇÃO DE TAPAS — suporta: desktop, mãos rastreadas (hand-tracking)
+  // e os DOIS controles VR (laser-controls). Prioridade para o que
+  // estiver ativo. Cada origem tem cooldown próprio.
+  // ------------------------------------------------------------------
   function detectHandSlaps(dt) {
     const inVR = scene.is('vr-mode');
-    const hands = inVR ? [
-      { id: 'left', el: leftTrackedHand },
-      { id: 'right', el: rightTrackedHand }
-    ] : [{ id: 'right', el: desktopRightHand }];
+    const hands = [];
+
+    if (inVR) {
+      // Mãos rastreadas — só inclui se realmente estiverem com juntas ativas
+      if (leftTrackedHand && isHandTrackingActive(leftTrackedHand)) {
+        hands.push({ id: 'left-hand', el: leftTrackedHand, type: 'tracked' });
+      }
+      if (rightTrackedHand && isHandTrackingActive(rightTrackedHand)) {
+        hands.push({ id: 'right-hand', el: rightTrackedHand, type: 'tracked' });
+      }
+      // Controles VR — SEMPRE verificados (funciona com 1 ou 2 controles)
+      if (leftController) hands.push({ id: 'left-ctrl', el: leftController, type: 'controller' });
+      if (rightController) hands.push({ id: 'right-ctrl', el: rightController, type: 'controller' });
+    } else {
+      hands.push({ id: 'right', el: desktopRightHand, type: 'desktop' });
+    }
 
     for (const hand of hands) {
-      if (!hand.el || !hand.el.object3D || (inVR && !hand.el.getAttribute('visible'))) continue;
+      if (!hand.el || !hand.el.object3D) continue;
 
       const world = new THREE.Vector3();
-      if (inVR) getTrackedPalmPosition(hand.el, world);
-      else hand.el.object3D.getWorldPosition(world);
+      if (hand.type === 'tracked') {
+        getTrackedPalmPosition(hand.el, world);
+      } else {
+        hand.el.object3D.getWorldPosition(world);
+      }
 
       const prev = handSamples.get(hand.id);
       let speed = 0;
       if (prev) speed = world.distanceTo(prev.pos) / Math.max(dt, 0.001);
       handSamples.set(hand.id, { pos: world.clone() });
 
-      if (!inVR) speed = Math.max(speed, desktopThrust > 0.13 && mouseSpeed > 350 ? 2.8 : 0);
-      if (speed < (inVR ? 1.65 : 1.6) || slapCooldown[hand.id] > 0) continue;
+      if (hand.type === 'desktop') {
+        speed = Math.max(speed, desktopThrust > 0.13 && mouseSpeed > 350 ? 2.8 : 0);
+      }
+
+      const threshold = hand.type === 'desktop' ? 1.6 : 1.65;
+      if (speed < threshold || (slapCooldown[hand.id] || 0) > 0) continue;
 
       let closest = null, closestDist = Infinity;
       for (const bot of bots) {
@@ -146,7 +184,8 @@
         if (d < closestDist) { closestDist = d; closest = bot; }
       }
 
-      if (closest && closestDist < (inVR ? 1.1 : 1.35)) {
+      const reach = hand.type === 'desktop' ? 1.35 : 1.1;
+      if (closest && closestDist < reach) {
         const botForward = new THREE.Vector3(0, 0, -1).applyQuaternion(closest.el.object3D.quaternion);
         const botPos = new THREE.Vector3();
         closest.el.object3D.getWorldPosition(botPos);
@@ -226,22 +265,25 @@
   }
 
   function init() {
-    scene = $('game-scene'); cameraEl = $('camera'); rigEl =$('rig');
-    gameOverModalEl = $('game-over-modal'); vrPanelEl = $('vr-game-over-panel'); alertEl =$('alert-overlay');
-    vrHudEl = $('vr-hud'); vrHudTextEl =$('vr-hud-text');
-    timeEl = $('time-val'); scoreEl = $('score-val'); finalScoreEl =$('final-score');
-    botCountEl = $('bot-count-val'); botStatesEl = $('bot-states-list'); detectionFillEl =$('detection-fill');
-    slapEl = $('slap-val'); stunEl =$('stun-val');
-    desktopHandsEl = $('desktop-hands'); desktopRightHand = $('desktop-right-hand'); desktopLeftHand =$('desktop-left-hand');
-    leftTrackedHand = $('left-tracked-hand'); rightTrackedHand =$('right-tracked-hand');
+    scene = $('game-scene'); cameraEl = $('camera'); rigEl = $('rig');
+    gameOverModalEl = $('game-over-modal'); vrPanelEl = $('vr-game-over-panel'); alertEl = $('alert-overlay');
+    vrHudEl = $('vr-hud'); vrHudTextEl = $('vr-hud-text');
+    timeEl = $('time-val'); scoreEl = $('score-val'); finalScoreEl = $('final-score');
+    botCountEl = $('bot-count-val'); botStatesEl = $('bot-states-list'); detectionFillEl = $('detection-fill');
+    slapEl = $('slap-val'); stunEl = $('stun-val');
+    desktopHandsEl = $('desktop-hands'); desktopRightHand = $('desktop-right-hand'); desktopLeftHand = $('desktop-left-hand');
+    leftTrackedHand = $('left-tracked-hand'); rightTrackedHand = $('right-tracked-hand');
+    leftController = $('left-controller'); rightController = $('right-controller');
     buildDesktopHand(desktopLeftHand, true); buildDesktopHand(desktopRightHand, false);
     if (!scene || !cameraEl || !rigEl) return;
     document.querySelectorAll('.hiding-spot').forEach(el => hidingSpots.push(el));
     BOT_SPAWNS.forEach((_, i) => bots.push(createBot(i)));
     lastRigPos = rigEl.object3D.position.clone();
 
-    $('btn-restart-2d').addEventListener('click', restartGame);$('btn-quit-2d').addEventListener('click', quitGame);
-    $('vr-btn-restart').addEventListener('click', restartGame);$('vr-btn-quit').addEventListener('click', quitGame);
+    $('btn-restart-2d').addEventListener('click', restartGame);
+    $('btn-quit-2d').addEventListener('click', quitGame);
+    $('vr-btn-restart').addEventListener('click', restartGame);
+    $('vr-btn-quit').addEventListener('click', quitGame);
 
     document.addEventListener('keydown', onKeyDown);
     document.addEventListener('keyup', e => keys.delete(e.key.toLowerCase()));
@@ -250,7 +292,7 @@
     document.addEventListener('mousemove', onMouseMove, { passive: true });
     $('controls-hint').textContent = 'PC: WASD/setas para mover · mouse para olhar.';
     scene.addEventListener('enter-vr', () => {
-      $('controls-hint').textContent = 'Quest: aproxime-se POR TRÁS e dê um tapa nas costas do robô.';
+      $('controls-hint').textContent = 'Quest: aproxime-se POR TRÁS e dê um tapa nas costas do robô (controle esquerdo OU direito).';
       if (desktopHandsEl) desktopHandsEl.setAttribute('visible', 'false');
       if (leftTrackedHand) leftTrackedHand.setAttribute('visible', 'true');
       if (rightTrackedHand) rightTrackedHand.setAttribute('visible', 'true');
@@ -553,7 +595,13 @@
 
   function restartGame() {
     if (alertTimeout) { clearTimeout(alertTimeout); alertTimeout = null; }
-    isGameOver = false; survivalTime = 0; score = 0; slapCount = 0; movementPenalty = 0; camoQuality = 0; playerWalkTime = 0; soundTimer = 0; desktopThrust = 0; mouseSpeed = 0; slapCooldown = { left: 0, right: 0 }; handSamples.clear();
+    isGameOver = false; survivalTime = 0; score = 0; slapCount = 0; movementPenalty = 0; camoQuality = 0; playerWalkTime = 0; soundTimer = 0; desktopThrust = 0; mouseSpeed = 0;
+    slapCooldown = {
+      left: 0, right: 0,
+      'left-hand': 0, 'right-hand': 0,
+      'left-ctrl': 0, 'right-ctrl': 0
+    };
+    handSamples.clear();
     isBoostActive = false; boostTimer = 0; removeAllPowerups();
     keys.clear();
     rigEl.object3D.position.set(0, 0, 10);
@@ -611,7 +659,9 @@
     if (dt <= 0) return;
     survivalTime += dt;
     score = Math.floor(survivalTime * 10) + slapCount * 100;
-    slapCooldown.left = Math.max(0, slapCooldown.left - dt); slapCooldown.right = Math.max(0, slapCooldown.right - dt);
+    for (const k in slapCooldown) {
+      slapCooldown[k] = Math.max(0, slapCooldown[k] - dt);
+    }
     updateDesktopHand(dt);
     checkBotSpawns();
     moveDesktopPlayer(dt);
@@ -634,18 +684,16 @@
       if (!bot.active) return;
       updateBot(bot, tmpPlayer, dt);
       maxDetection = Math.max(maxDetection, bot.detectionMeter);
-      if (bot.state === 'Perseguindo') anyChasing = true; // Identifica se há robôs perseguindo
+      if (bot.state === 'Perseguindo') anyChasing = true;
     });
 
-    // Os raios SÓ aparecem durante a PERSEGUIÇÃO
     if (anyChasing) {
       const activeBotsCount = bots.filter(b => b.active).length;
-      syncPowerups(activeBotsCount); // Cria N raios de acordo com a quantidade de robôs ativos[cite: 4]
+      syncPowerups(activeBotsCount);
     } else {
-      removeAllPowerups(); // Remove todos os raios se nenhum robô estiver perseguindo[cite: 4]
+      removeAllPowerups();
     }
 
-    // Rotaciona os raios ativos
     powerupEntities.forEach(el => {
       if (el && el.object3D) el.object3D.rotation.y += dt * 3.5;
     });
