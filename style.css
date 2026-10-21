@@ -334,6 +334,77 @@ a-scene { position: fixed; inset: 0; z-index: 0; }
 }
 
 /* ============================================================
+   SELETOR DE MAPA (menu inicial)
+   ============================================================ */
+.menu-map-select {
+  margin-bottom: 22px;
+  padding: 14px;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(0, 255, 204, 0.25);
+  border-radius: 10px;
+}
+.menu-map-label {
+  color: #00ffcc;
+  font-size: 11px;
+  letter-spacing: 2px;
+  font-weight: 900;
+  margin-bottom: 10px;
+  text-align: center;
+}
+.map-options {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+.map-option {
+  flex: 1 1 220px;
+  max-width: 340px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 2px solid rgba(0, 255, 204, 0.35);
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  transition: all 0.2s ease;
+  font-family: inherit;
+  font-size: 14px;
+}
+.map-option:hover {
+  border-color: rgba(0, 255, 204, 0.8);
+  background: rgba(0, 255, 204, 0.12);
+  transform: translateY(-2px);
+}
+.map-option.active {
+  border-color: #00ffcc;
+  background: rgba(0, 255, 204, 0.22);
+  box-shadow: 0 0 18px rgba(0, 255, 204, 0.5);
+}
+.map-icon {
+  font-size: 28px;
+  line-height: 1;
+}
+.map-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.map-name {
+  font-weight: 900;
+  font-size: 14px;
+  color: #00ffcc;
+  letter-spacing: 1px;
+}
+.map-desc {
+  font-size: 11px;
+  color: #9bc6c3;
+}
+
+/* ============================================================
    RESPONSIVO
    ============================================================ */
 @media (max-width: 600px) {
