@@ -41,96 +41,110 @@
   let boostTimer = 0;
   let powerupEntities = [];
 
-  // Debug pontual (só loga 1x se não achar nenhum gamepad em VR)
-  let _vrMoveDebugWarned = false;
+  // ================= Componente de Movimento VR via Thumbstick =================
+  // Este componente escuta os eventos 'thumbstickmoved' emitidos pelos controles
+  // e move o rig do jogador de acordo.
+  AFRAME.registerComponent('vr-thumbstick-movement', {
+    schema: {
+      speed: { type: 'number', default: 2.5 },
+      rig: { type: 'selector', default: '#rig' }
+    },
 
-  // ================= helpers VR =================
+    init: function () {
+      this.moveVector = new THREE.Vector2(0, 0);
+      this.tmpQuat = new THREE.Quaternion();
+      this.tmpVec = new THREE.Vector3();
 
-  // Detecção robusta de "estamos em VR" (A-Frame 1.4.x WebVR/WebXR)
-  function isInVR() {
-    if (!scene) return false;
-    if (typeof scene.is === 'function') {
-      if (scene.is('vr-mode')) return true;
-      if (scene.is('xr-mode')) return true;
-    }
-    if (scene.xrSession && scene.xrSession.mode && scene.xrSession.mode.indexOf('immersive') !== -1) return true;
-    return false;
-  }
+      // Função para atualizar o vetor de movimento a partir do evento do thumbstick.
+      this.onThumbstickMoved = (evt) => {
+        // O evento 'thumbstickmoved' fornece valores normalizados em evt.detail.x e evt.detail.y.
+        // Usamos um pequeno deadzone para evitar drift.
+        const deadzone = 0.15;
+        let x = evt.detail.x || 0;
+        let y = evt.detail.y || 0;
 
-  // Obtém a sessão WebXR por vários caminhos (A-Frame expõe diferente entre versões)
-  function getXRSession() {
-    if (!scene) return null;
+        if (Math.abs(x) < deadzone) x = 0;
+        if (Math.abs(y) < deadzone) y = 0;
 
-    if (scene.xrSession) return scene.xrSession;
+        // Guardamos o maior valor entre os dois controles.
+        // Isso permite que o jogador use o thumbstick que preferir.
+        if (Math.abs(x) > Math.abs(this.moveVector.x)) this.moveVector.x = x;
+        if (Math.abs(y) > Math.abs(this.moveVector.y)) this.moveVector.y = y;
+      };
 
-    const webxrSys = scene.systems && scene.systems.webxr;
-    if (webxrSys) {
-      if (webxrSys.session) return webxrSys.session;
-      if (webxrSys.xrSession) return webxrSys.xrSession;
-    }
+      // Função para resetar o vetor quando o thumbstick volta ao centro.
+      this.onThumbstickReleased = () => {
+        this.moveVector.set(0, 0);
+      };
 
-    // Via Three.js renderer (A-Frame usa por baixo)
-    const tryRenderer = (r) => {
-      try {
-        if (r && r.xr && typeof r.xr.getSession === 'function') {
-          return r.xr.getSession();
-        }
-      } catch (e) {}
-      return null;
-    };
-    let s = tryRenderer(scene.renderer);
-    if (s) return s;
-    const rendererSys = scene.systems && scene.systems.renderer;
-    if (rendererSys) {
-      s = tryRenderer(rendererSys.renderer);
-      if (s) return s;
-    }
+      // Adiciona os listeners aos dois controles.
+      // Assumimos que os elementos com os IDs 'left-controller' e 'right-controller'
+      // já existem no DOM (definidos no index.html).
+      this.leftCtrl = document.querySelector('#left-controller');
+      this.rightCtrl = document.querySelector('#right-controller');
 
-    return null;
-  }
+      if (this.leftCtrl) {
+        this.leftCtrl.addEventListener('thumbstickmoved', this.onThumbstickMoved);
+        this.leftCtrl.addEventListener('thumbstickup', this.onThumbstickReleased); // ou 'thumbsticktouchend'
+      }
+      if (this.rightCtrl) {
+        this.rightCtrl.addEventListener('thumbstickmoved', this.onThumbstickMoved);
+        this.rightCtrl.addEventListener('thumbstickup', this.onThumbstickReleased);
+      }
+    },
 
-  // Lê thumbstick priorizando a XRSession bruta, com fallback p/ componentes A-Frame
-  function readStick(side) {
-    // 1) Caminho preferido: XRSession.inputSources
-    const session = getXRSession();
-    if (session && session.inputSources) {
-      for (const src of session.inputSources) {
-        if (src.handedness === side && src.gamepad && src.gamepad.axes) {
-          const axes = src.gamepad.axes;
-          if (axes.length >= 4) {
-            return { x: axes[2] || 0, y: axes[3] || 0, found: true };
-          }
-          if (axes.length >= 2) {
-            return { x: axes[0] || 0, y: axes[1] || 0, found: true };
-          }
-        }
+    tick: function (time, delta) {
+      // Se não estivermos em VR ou não houver movimento, não faz nada.
+      if (!this.el.sceneEl.is('vr-mode')) return;
+      if (this.moveVector.x === 0 && this.moveVector.y === 0) return;
+
+      const rig = this.data.rig;
+      if (!rig) return;
+
+      const dt = Math.min(delta / 1000, 0.05); // Limita o delta para evitar saltos.
+
+      // Obtém a direção "para frente" da cabeça em coordenadas de mundo.
+      // Usamos o objeto da câmera para determinar para onde o jogador está olhando.
+      const camera = this.el.sceneEl.camera;
+      if (!camera) return;
+
+      camera.getWorldQuaternion(this.tmpQuat);
+      // Vetor "para frente" local da câmera (0, 0, -1).
+      this.tmpVec.set(0, 0, -1).applyQuaternion(this.tmpQuat);
+      // Zera o Y para manter o movimento no plano horizontal.
+      this.tmpVec.y = 0;
+      this.tmpVec.normalize();
+
+      // Calcula o vetor "direita" (perpendicular ao "para frente").
+      const forward = this.tmpVec.clone();
+      const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
+
+      // Combina os vetores de acordo com a entrada do thumbstick.
+      // -y é para frente (empurrar o stick para cima).
+      // x é para os lados.
+      const moveDir = new THREE.Vector3()
+        .addScaledVector(forward, -this.moveVector.y)
+        .addScaledVector(right, this.moveVector.x);
+
+      if (moveDir.lengthSq() > 0) {
+        moveDir.normalize();
+        const speed = this.data.speed * (isBoostActive ? 1.8 : 1) * dt;
+        rig.object3D.position.addScaledVector(moveDir, speed);
+      }
+    },
+
+    remove: function () {
+      if (this.leftCtrl) {
+        this.leftCtrl.removeEventListener('thumbstickmoved', this.onThumbstickMoved);
+        this.leftCtrl.removeEventListener('thumbstickup', this.onThumbstickReleased);
+      }
+      if (this.rightCtrl) {
+        this.rightCtrl.removeEventListener('thumbstickmoved', this.onThumbstickMoved);
+        this.rightCtrl.removeEventListener('thumbstickup', this.onThumbstickReleased);
       }
     }
+  });
 
-    // 2) Fallback: componentes A-Frame
-    const el = $(side + '-controller');
-    if (!el || !el.components) return { x: 0, y: 0, found: false };
-
-    const candidates = [
-      el.components['tracked-controls'],
-      el.components['tracked-controls-webxr']
-    ];
-    for (const comp of candidates) {
-      if (!comp) continue;
-      let gp = null;
-      if (comp.controller) {
-        gp = comp.controller.gamepad || comp.controller;
-      }
-      if (!gp && comp.gamepad) gp = comp.gamepad;
-
-      if (gp && gp.axes) {
-        const axes = gp.axes;
-        if (axes.length >= 4) return { x: axes[2] || 0, y: axes[3] || 0, found: true };
-        if (axes.length >= 2) return { x: axes[0] || 0, y: axes[1] || 0, found: true };
-      }
-    }
-    return { x: 0, y: 0, found: false };
-  }
 
   // ================= Construção das mãos =================
 
@@ -176,16 +190,17 @@
   }
 
   function updateVRHandsVisibility() {
-    if (!isInVR()) return;
+    if (!scene || !scene.is('vr-mode')) return;
     ['left', 'right'].forEach(side => {
       const ctrl = $(side + '-controller');
       if (!ctrl) return;
       const ctrlHand = ctrl.querySelector('.vr-hand');
       const trackedHand = $(side + '-tracked-hand');
 
-      // Se o gamepad existe, o controle está rastreado
-      const stick = readStick(side);
-      const hasController = stick.found;
+      // Usamos o evento axismove como um sinal de que o controle está ativo.
+      // Se o controle estiver rastreando, o componente tracked-controls estará presente.
+      const comp = ctrl.components && ctrl.components['tracked-controls'];
+      const hasController = !!(comp && comp.controller);
 
       if (ctrlHand) ctrlHand.setAttribute('visible', hasController ? 'true' : 'false');
       if (trackedHand) trackedHand.setAttribute('visible', hasController ? 'false' : 'true');
@@ -199,10 +214,10 @@
     if (mouseLast.t) {
       const dt = Math.max(0.008, (now - mouseLast.t) / 1000);
       mouseSpeed = Math.hypot(e.clientX - mouseLast.x, e.clientY - mouseLast.y) / dt;
-      if (!isInVR() && mouseSpeed > 850) desktopThrust = 0.24;
+      if (!scene.is('vr-mode') && mouseSpeed > 850) desktopThrust = 0.24;
     }
     mouseLast = { x: e.clientX, y: e.clientY, t: now };
-    if (!isInVR() && desktopRightHand && cameraEl) {
+    if (!scene.is('vr-mode') && desktopRightHand && cameraEl) {
       const x = Math.max(-0.58, Math.min(0.58, (e.clientX / window.innerWidth - 0.5) * 1.15));
       const y = Math.max(-0.42, Math.min(0.28, (0.5 - e.clientY / window.innerHeight) * 0.75 - 0.18));
       desktopRightHand.object3D.position.x = x;
@@ -211,7 +226,7 @@
   }
 
   function updateDesktopHand(dt) {
-    if (!desktopRightHand || isInVR()) return;
+    if (!desktopRightHand || scene.is('vr-mode')) return;
     desktopThrust = Math.max(0, desktopThrust - dt * 0.9);
     const p = desktopRightHand.object3D.position;
     p.z = -0.68 - desktopThrust * 2.1;
@@ -255,9 +270,8 @@
       return true;
     }
     if (src.kind === 'controller') {
-      // Sempre usa o controller; se não há gamepad, ainda assim pega a posição do grip
-      const stick = readStick(src.id);
-      if (!stick.found) return false;
+      const comp = src.el.components && src.el.components['tracked-controls'];
+      if (!comp || !comp.controller) return false;
       src.el.object3D.getWorldPosition(out);
       const q = src.el.object3D.getWorldQuaternion(new THREE.Quaternion());
       const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(q);
@@ -272,7 +286,7 @@
   }
 
   function detectHandSlaps(dt) {
-    const inVR = isInVR();
+    const inVR = scene.is('vr-mode');
 
     const sources = [];
     if (inVR) {
@@ -420,6 +434,11 @@
     BOT_SPAWNS.forEach((_, i) => bots.push(createBot(i)));
     lastRigPos = rigEl.object3D.position.clone();
 
+    // Adiciona o componente de movimento ao rig.
+    // O componente agora lida com a locomoção do jogador em VR.
+    rigEl.setAttribute('vr-thumbstick-movement', { speed: 2.5, rig: '#rig' });
+
+
     $('btn-restart-2d').addEventListener('click', restartGame);
     $('btn-quit-2d').addEventListener('click', quitGame);
     $('vr-btn-restart').addEventListener('click', restartGame);
@@ -466,7 +485,7 @@
   }
 
   function moveDesktopPlayer(dt) {
-    if (isInVR()) return;
+    if (scene.is('vr-mode')) return;
     const forward = (keys.has('w') || keys.has('arrowup') ? 1 : 0) - (keys.has('s') || keys.has('arrowdown') ? 1 : 0);
     const side = (keys.has('d') || keys.has('arrowright') ? 1 : 0) - (keys.has('a') || keys.has('arrowleft') ? 1 : 0);
     if (!forward && !side) return;
@@ -482,56 +501,7 @@
     rigEl.object3D.position.z += moveZ / len * speed;
   }
 
-  // ============ MOVIMENTAÇÃO VR via thumbstick (CORRIGIDA) ============
-  function moveVRPlayer(dt) {
-    if (!isInVR()) return;
-
-    const stickL = readStick('left');
-    const stickR = readStick('right');
-
-    // Aviso único caso nenhum caminho consiga achar o gamepad
-    if (!_vrMoveDebugWarned && !stickL.found && !stickR.found) {
-      _vrMoveDebugWarned = true;
-      console.warn('[VR] Nenhum gamepad encontrado. Debug:', {
-        isInVR: isInVR(),
-        xrSession: !!getXRSession(),
-        inputSources: getXRSession() && getXRSession().inputSources ? getXRSession().inputSources.length : 'n/a',
-        leftTC: !!(leftControllerEl && leftControllerEl.components['tracked-controls']),
-        leftTCW: !!(leftControllerEl && leftControllerEl.components['tracked-controls-webxr']),
-        rightTC: !!(rightControllerEl && rightControllerEl.components['tracked-controls']),
-        rightTCW: !!(rightControllerEl && rightControllerEl.components['tracked-controls-webxr'])
-      });
-    }
-
-    let stickX = 0, stickY = 0;
-    if (Math.abs(stickL.x) > Math.abs(stickX)) stickX = stickL.x;
-    if (Math.abs(stickR.x) > Math.abs(stickX)) stickX = stickR.x;
-    if (Math.abs(stickL.y) > Math.abs(stickY)) stickY = stickL.y;
-    if (Math.abs(stickR.y) > Math.abs(stickY)) stickY = stickR.y;
-
-    const DZ = 0.15;
-    if (Math.abs(stickX) < DZ) stickX = 0;
-    if (Math.abs(stickY) < DZ) stickY = 0;
-    if (!stickX && !stickY) return;
-
-    // Direção da cabeça em espaço de MUNDO (funciona em VR)
-    const camWorldQ = cameraEl.object3D.getWorldQuaternion(new THREE.Quaternion());
-    const camFwd = new THREE.Vector3(0, 0, -1).applyQuaternion(camWorldQ);
-    const yaw = Math.atan2(-camFwd.x, -camFwd.z);
-
-    const forward = -stickY; // thumbstick pra cima = andar pra frente
-    const side = stickX;
-
-    const moveX = (-Math.sin(yaw) * forward + Math.cos(yaw) * side);
-    const moveZ = (-Math.cos(yaw) * forward - Math.sin(yaw) * side);
-    const len = Math.hypot(moveX, moveZ) || 1;
-
-    const baseSpeed = 3.8;
-    const speed = (isBoostActive ? baseSpeed * 1.8 : baseSpeed) * dt;
-
-    rigEl.object3D.position.x += moveX / len * speed;
-    rigEl.object3D.position.z += moveZ / len * speed;
-  }
+  // A função moveVRPlayer antiga foi removida. A lógica agora está no componente 'vr-thumbstick-movement'.
 
   // ================= Powerups (raios) =================
 
@@ -770,7 +740,6 @@
 
     if (vrHudTextEl) {
       const boostText = isBoostActive ? ` | ⚡ RAIO (${boostTimer.toFixed(1)}s)` : '';
-      // Dica de stick no HUD VR (útil para o jogador saber onde empurrar)
       vrHudTextEl.setAttribute('value', `Tempo: ${survivalTime.toFixed(1)}s | Pts: ${score}${boostText}`);
     }
   }
@@ -821,7 +790,7 @@
   }
 
   function quitGame() {
-    if (scene && isInVR() && scene.exitVR) scene.exitVR();
+    if (scene && scene.is('vr-mode') && scene.exitVR) scene.exitVR();
     if (gameOverModalEl) gameOverModalEl.style.display = 'none';
     if (vrPanelEl) vrPanelEl.setAttribute('visible', 'false');
     alert('Você saiu da partida. Atualize a página para jogar novamente.');
@@ -860,7 +829,7 @@
     updateDesktopHand(dt);
     checkBotSpawns();
     moveDesktopPlayer(dt);
-    moveVRPlayer(dt);
+    // moveVRPlayer(dt) foi removido; o componente 'vr-thumbstick-movement' cuida disso.
 
     const before = rigEl.object3D.position.clone();
     enforceVRWorldBoundsAndCollisions();
