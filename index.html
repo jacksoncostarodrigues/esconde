@@ -77,8 +77,18 @@
           <a-text id="vr-hud-text" value="Tempo: 0.0s | Pts: 0" align="center" position="0 0 0.01" width="2.6" color="#00ffcc"></a-text>
         </a-entity>
       </a-entity>
-      <a-entity id="left-controller" oculus-touch-controls="hand: left"></a-entity>
-      <a-entity id="right-controller" laser-controls="hand: right" raycaster="objects: .clickable; far: 10" line="color: #00ffcc; opacity: 0.8"></a-entity>
+
+      <!-- AMBOS os controles com laser-controls: rastreiam + têm laser/cursor
+           e agora também são detectados pelo sistema de tapas. -->
+      <a-entity id="left-controller"
+                laser-controls="hand: left"
+                raycaster="objects: .clickable; far: 10"
+                line="color: #ff69b4; opacity: 0.8"></a-entity>
+      <a-entity id="right-controller"
+                laser-controls="hand: right"
+                raycaster="objects: .clickable; far: 10"
+                line="color: #00ffcc; opacity: 0.8"></a-entity>
+
       <!-- Mãos reais: o navegador/Quest fornece juntas e rastreamento dos dedos via WebXR. -->
       <a-entity id="left-tracked-hand" hand-tracking-controls="hand: left; modelStyle: mesh; modelColor: #e8b99a" visible="false"></a-entity>
       <a-entity id="right-tracked-hand" hand-tracking-controls="hand: right; modelStyle: mesh; modelColor: #e8b99a" visible="false"></a-entity>
